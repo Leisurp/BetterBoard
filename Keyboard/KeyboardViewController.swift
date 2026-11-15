@@ -695,14 +695,18 @@ extension KeyboardViewController: GifPanelDelegate, ClipboardPanelDelegate {
         scheduleSuggestions()
     }
 
-    /// Opens the BetterBoard app (keyboards can't do this officially, so walk the
-    /// responder chain to the app object, as other keyboards do).
+    /// Opens the BetterBoard app. Keyboards have no official way to do this, so find
+    /// the app object through the responder chain and call `open(_:options:completionHandler:)`
+    /// dynamically (it's hidden from extensions at compile time), as other keyboards do.
     private func openApp(_ link: String) {
         guard let url = URL(string: link) else { return }
+        typealias OpenFunction = @convention(c) (AnyObject, Selector, NSURL, NSDictionary, AnyObject?) -> Void
+        let selector = NSSelectorFromString("openURL:options:completionHandler:")
         var responder: UIResponder? = self
         while let current = responder {
-            if let application = current as? UIApplication {
-                application.open(url, options: [:], completionHandler: nil)
+            if current is UIApplication, current.responds(to: selector) {
+                let open = unsafeBitCast(current.method(for: selector), to: OpenFunction.self)
+                open(current, selector, url as NSURL, NSDictionary(), nil)
                 return
             }
             responder = current.next
