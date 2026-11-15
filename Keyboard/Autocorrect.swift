@@ -17,6 +17,7 @@ final class Autocorrector {
     }
 
     let model = WordModel()
+    let predictor = Predictor()
     private let checker = UITextChecker()
     let language: String
 
@@ -40,6 +41,36 @@ final class Autocorrector {
         let stored = UserDefaults.standard.stringArray(forKey: learnedKey) ?? []
         learned = Dictionary(stored.map { ($0.lowercased(), $0) }, uniquingKeysWith: { a, _ in a })
         model.load { [weak self] in self?.addUserWordsToModel() }
+        predictor.load()
+    }
+
+    // MARK: Next-word predictions
+
+    /// Suggestions before a word is started: likely next words (best in the middle,
+    /// like Gboard) and an emoji for the previous word on the right.
+    func predictions(previous: String?, capitalise: Bool, showEmoji: Bool) -> [Suggestion?] {
+        var words = predictor.predictions(after: previous, limit: 6)
+            .filter { !Lexicon.blocked.contains($0.lowercased()) }
+        if capitalise {
+            words = words.map { $0.prefix(1).uppercased() + $0.dropFirst() }
+        }
+        var slots: [Suggestion?] = [nil, nil, nil]
+        let order = [1, 0, 2] // best word in the middle
+        for (rank, word) in words.prefix(3).enumerated() {
+            slots[order[rank]] = Suggestion(text: word, isPrediction: true)
+        }
+        if showEmoji, let previous, previous != Predictor.sentenceStart,
+           let emoji = predictor.emoji(for: previous).first {
+            slots[2] = Suggestion(text: emoji, isEmoji: true)
+        }
+        return slots
+    }
+
+    /// Bonus for words that often follow the previous word ("I'm" → "from" over "form").
+    private func contextBonus(previous: String?, word: String) -> Float {
+        guard let previous else { return 0 }
+        let count = predictor.pairCount(previous: previous, next: word)
+        return count > 0 ? min(4, 0.8 * Float(log(1 + Double(count)))) : 0
     }
 
     private func addUserWordsToModel() {
@@ -70,8 +101,11 @@ final class Autocorrector {
     /// - Parameters:
     ///   - offsets: where each letter of the word was touched, relative to the centre
     ///     of the key that was hit, in key-pitch units (zeros if unknown).
+    ///   - previous: the word before this one ("<s>" at the start of a sentence).
     ///   - autoApply: whether the "Auto-correction" setting is on.
-    func analyze(word: String, offsets: [CGPoint], autoApply: Bool) -> Analysis {
+    ///   - showEmoji: whether to offer an emoji for the word.
+    func analyze(word: String, offsets: [CGPoint], previous: String?,
+                 autoApply: Bool, showEmoji: Bool) -> Analysis {
         let typed = Suggestion(text: word, isTypedWord: true)
         let lower = word.lowercased()
 
@@ -99,6 +133,7 @@ final class Autocorrector {
             || checkerKnows(word) || checkerKnows(lower)
         let ownTouchCost = touchCost(offsets: offsets, count: n)
         let typedScore = ownTouchCost - (listed?.logFreq ?? (knownLocally ? 4 : 0))
+            - contextBonus(previous: previous, word: lower)
 
         // Spellings that are always fixed: "i" → "I", "dont" → "don't", "color" → "colour".
         var forced: String?
@@ -126,14 +161,23 @@ final class Autocorrector {
             guard !seen.contains(key) else { return }
             seen.insert(key)
             alternatives.append(Alternative(text: matchCase(text, to: word),
-                                            score: c.score + penalty,
+                                            score: c.score + penalty - contextBonus(previous: previous, word: key),
                                             cost: c.cost,
                                             barOnly: barOnly || c.suggestOnly))
         }
         // Same letters, different word ("its" → "it's") comes first.
         for c in exact where c.display.lowercased() != lower { consider(c, penalty: -100, barOnly: true) }
         for c in model.decode(input, limit: 6) { consider(c, penalty: 0, barOnly: false) }
-        // Completions rank below similar-scoring corrections and are never auto-applied.
+        // Completions that commonly follow the previous word ("how m" → "many").
+        let typedLetters = Predictor.lettersOnly(word)
+        for (rank, p) in predictor.predictions(after: previous, startingWith: typedLetters).prefix(3).enumerated() {
+            let key = p.word.lowercased()
+            guard !seen.contains(key), !Lexicon.blocked.contains(key) else { continue }
+            seen.insert(key)
+            alternatives.append(Alternative(text: matchCase(p.word, to: word),
+                                            score: -30 + Float(rank), cost: 0, barOnly: true))
+        }
+        // Other completions rank below similar-scoring corrections and are never auto-applied.
         for c in model.completions(input, limit: 4) { consider(c, penalty: 2.5, barOnly: true) }
         alternatives.sort { $0.score < $1.score }
 
@@ -158,13 +202,17 @@ final class Autocorrector {
         func next() -> Suggestion? {
             others.isEmpty ? nil : Suggestion(text: others.removeFirst())
         }
-        let suggestions: [Suggestion?]
+        var suggestions: [Suggestion?]
         if let correction {
             suggestions = [typed, Suggestion(text: correction, isAutocorrect: true), next()]
         } else if knownLocally || listed != nil {
             suggestions = [next(), typed, next()]
         } else {
             suggestions = [typed, next(), next()]
+        }
+        // Emoji for the word (or what it'll be corrected to) on the right, like Gboard.
+        if showEmoji, let emoji = predictor.emoji(for: correction ?? lower).first {
+            suggestions[2] = Suggestion(text: emoji, isEmoji: true)
         }
         return Analysis(word: word, correction: correction, suggestions: suggestions)
     }

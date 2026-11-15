@@ -38,6 +38,8 @@ final class KeyboardSettings {
         static let autocap = "autocap"
         static let doubleSpacePeriod = "doubleSpacePeriod"
         static let capsLock = "capsLock"
+        static let nextWord = "nextWord"
+        static let emojiSuggestions = "emojiSuggestions"
     }
 
     private init() {
@@ -52,7 +54,21 @@ final class KeyboardSettings {
             Key.autocap: true,
             Key.doubleSpacePeriod: true,
             Key.capsLock: true,
+            Key.nextWord: true,
+            Key.emojiSuggestions: true,
         ])
+    }
+
+    /// Show predicted next words before you start typing (Gboard "Next-word suggestions").
+    var nextWord: Bool {
+        get { defaults.bool(forKey: Key.nextWord) }
+        set { defaults.set(newValue, forKey: Key.nextWord) }
+    }
+
+    /// Show emoji for words in the suggestion bar (Gboard "Show emoji suggestions").
+    var emojiSuggestions: Bool {
+        get { defaults.bool(forKey: Key.emojiSuggestions) }
+        set { defaults.set(newValue, forKey: Key.emojiSuggestions) }
     }
 
     var holdForSymbols: Bool {

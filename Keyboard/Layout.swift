@@ -116,9 +116,12 @@ enum Layout {
     }
 
     private static func bottomRow(modeKey: KeyDef) -> KeyRow {
+        // Gboard-style: comma between 123 and emoji, with a slightly narrower
+        // emoji key and space bar to make room.
         KeyRow(keys: [
             modeKey,
-            .special(.nextKeyboard, width: .units(bottomModeWidth)),
+            .char(","),
+            .special(.nextKeyboard, width: .units(1.1)),
             .special(.space, width: .flex),
             .char(".", hint: ","),
             .special(.returnKey, width: .units(returnWidth)),

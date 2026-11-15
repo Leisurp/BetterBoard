@@ -7,6 +7,10 @@ struct Suggestion: Equatable {
     var isTypedWord = false
     /// Will be applied automatically when space is pressed.
     var isAutocorrect = false
+    /// An emoji for the word (replaces the word being typed, like Gboard).
+    var isEmoji = false
+    /// A next-word prediction (shown before you start typing a word).
+    var isPrediction = false
 }
 
 protocol SuggestionBarDelegate: AnyObject {
@@ -70,7 +74,8 @@ final class SuggestionBar: UIView {
         for (index, button) in slots.enumerated() {
             if let s = padded[index] {
                 button.setTitle(s.text, for: .normal)
-                button.titleLabel?.font = .systemFont(ofSize: 17, weight: s.isAutocorrect ? .semibold : .regular)
+                button.titleLabel?.font = .systemFont(ofSize: s.isEmoji ? 22 : 17,
+                                                      weight: s.isAutocorrect ? .semibold : .regular)
                 button.isHidden = false
             } else {
                 button.setTitle(nil, for: .normal)

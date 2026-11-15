@@ -71,6 +71,8 @@ final class SettingsPanel: UIView {
 
         addSection("TYPING")
         addToggle("Auto-correction", \.autocorrect)
+        addToggle("Next-word suggestions", \.nextWord)
+        addToggle("Emoji suggestions", \.emojiSuggestions)
         addToggle("Auto-capitalisation", \.autocap)
         addToggle("Double-space full stop", \.doubleSpacePeriod)
         addToggle("Double-tap Shift for caps lock", \.capsLock)

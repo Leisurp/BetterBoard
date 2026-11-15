@@ -325,20 +325,44 @@ final class KeyboardViewController: UIInputViewController {
 
     // MARK: Suggestions
 
-    private var cachedAnalysis: (word: String, touches: Int, autoApply: Bool, result: Autocorrector.Analysis)?
+    private var cachedAnalysis: (key: String, result: Autocorrector.Analysis)?
     private var suggestionsPending = false
+
+    /// The word before the current one, or "<s>" at the start of a sentence.
+    private func previousWord() -> String {
+        var text = Substring(mirror)
+        // Skip the word being typed.
+        while let last = text.last, last.isLetter || last == "'" || last == "\u{2019}" {
+            text = text.dropLast()
+        }
+        // Skip spaces and commas between words.
+        while let last = text.last, last == " " || last == "," || last == "\u{00A0}" {
+            text = text.dropLast()
+        }
+        guard let last = text.last, last.isLetter || last == "'" || last == "\u{2019}" else {
+            return Predictor.sentenceStart
+        }
+        var word: [Character] = []
+        for ch in text.reversed() {
+            if ch.isLetter || ch == "'" || ch == "\u{2019}" { word.append(ch) } else { break }
+        }
+        return String(word.reversed())
+    }
 
     /// Autocorrect's verdict on the current word (cached until the word changes).
     private func analysis() -> Autocorrector.Analysis? {
         let word = currentWord()
         guard !word.isEmpty, fieldAllowsCorrection else { return nil }
         let autoApply = autoApplyCorrections
-        if let cached = cachedAnalysis, cached.word == word,
-           cached.touches == wordOffsets.count, cached.autoApply == autoApply {
+        let previous = previousWord()
+        let showEmoji = settings.emojiSuggestions
+        let key = "\(word)|\(wordOffsets.count)|\(autoApply)|\(previous)|\(showEmoji)"
+        if let cached = cachedAnalysis, cached.key == key {
             return cached.result
         }
-        let result = autocorrector.analyze(word: word, offsets: wordOffsets, autoApply: autoApply)
-        cachedAnalysis = (word, wordOffsets.count, autoApply, result)
+        let result = autocorrector.analyze(word: word, offsets: wordOffsets, previous: previous,
+                                           autoApply: autoApply, showEmoji: showEmoji)
+        cachedAnalysis = (key, result)
         return result
     }
 
@@ -355,7 +379,17 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func refreshSuggestions() {
-        suggestionBar.setSuggestions(analysis()?.suggestions ?? [])
+        if let analysis = analysis() {
+            suggestionBar.setSuggestions(analysis.suggestions)
+        } else if currentWord().isEmpty, fieldAllowsCorrection, settings.nextWord,
+                  keyboardView.mode == .letters, mirror.isEmpty || mirror.last?.isWhitespace == true {
+            // Before a word is started: predict the next word, like Gboard.
+            suggestionBar.setSuggestions(autocorrector.predictions(previous: previousWord(),
+                                                                   capitalise: shiftState != .off,
+                                                                   showEmoji: settings.emojiSuggestions))
+        } else {
+            suggestionBar.setSuggestions([])
+        }
     }
 
     // MARK: Settings panel
@@ -535,6 +569,8 @@ extension KeyboardViewController: SuggestionBarDelegate {
         if suggestion.isTypedWord {
             autocorrector.learn(word)
         } else {
+            // Words and emoji replace what's being typed (Gboard); predictions and
+            // emoji offered after a space are simply added.
             deleteBackward(word.count)
             insert(suggestion.text)
         }
