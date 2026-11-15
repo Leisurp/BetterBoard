@@ -1,4 +1,5 @@
 import UIKit
+import UniformTypeIdentifiers
 
 /// iOS entry point for the keyboard. Owns the text logic: inserting, deleting,
 /// shift / auto-capitalisation, double-space full stop and autocorrect.
@@ -8,6 +9,17 @@ final class KeyboardViewController: UIInputViewController {
     private let suggestionBar = SuggestionBar()
     private let keyboardView = KeyboardView()
     private var settingsPanel: SettingsPanel?
+
+    // GIFs and clipboard history (need Full Access).
+    private let clipboard = ClipboardStore()
+    private let giphy = GiphyClient()
+    private var gifPanel: GifPanel?
+    private var clipboardPanel: ClipboardPanel?
+    private var gifSearchField: GifSearchField?
+    /// Non-nil while typing a GIF search: keys type into the search box instead.
+    private var gifQuery: String?
+    private var lastGifQuery: String?
+    private var clipboardTimer: Timer?
     private var heightConstraint: NSLayoutConstraint?
 
     private var shiftState: ShiftState = .off {
@@ -159,6 +171,19 @@ final class KeyboardViewController: UIInputViewController {
         // The text field's settings are sometimes only available once the keyboard is on screen.
         resyncMirror()
         updateForContext()
+        // Clipboard history: iOS only lets the keyboard look while it's on screen.
+        checkClipboard()
+        clipboardTimer?.invalidate()
+        clipboardTimer = Timer.scheduledTimer(timeInterval: 1.0, target: self,
+                                              selector: #selector(checkClipboard),
+                                              userInfo: nil, repeats: true)
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        clipboardTimer?.invalidate()
+        clipboardTimer = nil
+        giphy.clearImageCache()
     }
 
     override func textDidChange(_ textInput: UITextInput?) {
@@ -185,7 +210,9 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func updateForContext() {
-        keyboardView.returnKeyType = proxy.returnKeyType ?? .default
+        if gifQuery == nil {
+            keyboardView.returnKeyType = proxy.returnKeyType ?? .default
+        }
         updateAppearance()
         updateAutoShift()
         scheduleSuggestions()
@@ -279,7 +306,7 @@ final class KeyboardViewController: UIInputViewController {
     // MARK: Shift / auto-capitalisation
 
     private func updateAutoShift() {
-        guard shiftState != .locked, !shiftHeldDown else { return }
+        guard shiftState != .locked, !shiftHeldDown, gifQuery == nil else { return }
         guard settings.autocap, keyboardView.mode == .letters else {
             if shiftState == .once { shiftState = .off }
             return
@@ -396,6 +423,7 @@ final class KeyboardViewController: UIInputViewController {
 
     private func showSettings() {
         guard settingsPanel == nil else { return }
+        dismissPanels()
         let panel = SettingsPanel(isDark: keyboardView.theme.isDark)
         panel.onDone = { [weak self] in self?.hideSettings() }
         panel.onResetLearned = { [weak self] in self?.autocorrector.resetLearned() }
@@ -428,6 +456,7 @@ final class KeyboardViewController: UIInputViewController {
 
 extension KeyboardViewController: KeyboardViewDelegate {
     func keyboardView(_ keyboard: KeyboardView, didType text: String, touchOffset: CGPoint?) {
+        if handleGifSearchKey(.text(text)) { return }
         resyncMirrorIfIdle()
         lastKeyWasSpace = false
         lastCorrection = nil
@@ -451,6 +480,7 @@ extension KeyboardViewController: KeyboardViewDelegate {
     }
 
     func keyboardViewDidTapSpace(_ keyboard: KeyboardView) {
+        if handleGifSearchKey(.space) { return }
         resyncMirrorIfIdle()
 
         // Double-space full stop.
@@ -478,6 +508,7 @@ extension KeyboardViewController: KeyboardViewDelegate {
     }
 
     func keyboardViewDidTapReturn(_ keyboard: KeyboardView) {
+        if handleGifSearchKey(.submit) { return }
         resyncMirrorIfIdle()
         lastKeyWasSpace = false
         lastCorrection = nil
@@ -488,6 +519,7 @@ extension KeyboardViewController: KeyboardViewDelegate {
     }
 
     func keyboardView(_ keyboard: KeyboardView, backspaceWholeWord: Bool) {
+        if handleGifSearchKey(.backspace) { return }
         resyncMirrorIfIdle()
         lastKeyWasSpace = false
 
@@ -583,5 +615,236 @@ extension KeyboardViewController: SuggestionBarDelegate {
 
     func suggestionBarDidTapSettings(_ bar: SuggestionBar) {
         showSettings()
+    }
+
+    func suggestionBarDidTapGif(_ bar: SuggestionBar) {
+        showGifPanel(query: nil)
+    }
+
+    func suggestionBarDidTapClipboard(_ bar: SuggestionBar) {
+        showClipboardPanel()
+    }
+}
+
+// MARK: - GIFs & clipboard
+
+extension KeyboardViewController: GifPanelDelegate, ClipboardPanelDelegate {
+    private enum GifSearchKey {
+        case text(String), space, backspace, submit
+    }
+
+    private var isDark: Bool { keyboardView.theme.isDark }
+
+    /// While searching for GIFs, keys type into the search box instead of the document.
+    private func handleGifSearchKey(_ key: GifSearchKey) -> Bool {
+        guard var query = gifQuery else { return false }
+        switch key {
+        case .text(let text):
+            query += text
+        case .space:
+            query += " "
+        case .backspace:
+            if !query.isEmpty { query.removeLast() }
+        case .submit:
+            let trimmed = query.trimmingCharacters(in: .whitespaces)
+            showGifPanel(query: trimmed.isEmpty ? nil : trimmed)
+            return true
+        }
+        gifQuery = query
+        gifSearchField?.setQuery(query)
+        if shiftState == .once { shiftState = .off }
+        return true
+    }
+
+    @objc private func checkClipboard() {
+        guard hasFullAccess else { return }
+        let result = clipboard.capture()
+        if let key = result.giphyKey {
+            settings.giphyKey = key
+            if gifPanel != nil { loadGifs(query: lastGifQuery) }
+        }
+        if result.changed { clipboardPanel?.reload() }
+    }
+
+    private func presentPanel(_ panel: UIView) {
+        panel.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(panel)
+        NSLayoutConstraint.activate([
+            panel.topAnchor.constraint(equalTo: view.topAnchor),
+            panel.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            panel.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            panel.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+        keyboardView.isHidden = true
+        suggestionBar.isHidden = true
+    }
+
+    /// Back to the normal keyboard.
+    private func dismissPanels() {
+        gifPanel?.removeFromSuperview()
+        gifPanel = nil
+        clipboardPanel?.removeFromSuperview()
+        clipboardPanel = nil
+        gifSearchField?.removeFromSuperview()
+        gifSearchField = nil
+        gifQuery = nil
+        keyboardView.returnKeyType = proxy.returnKeyType ?? .default
+        keyboardView.isHidden = false
+        suggestionBar.isHidden = false
+        updateAutoShift()
+        scheduleSuggestions()
+    }
+
+    /// Opens the BetterBoard app (keyboards can't do this officially, so walk the
+    /// responder chain to the app object, as other keyboards do).
+    private func openApp(_ link: String) {
+        guard let url = URL(string: link) else { return }
+        var responder: UIResponder? = self
+        while let current = responder {
+            if let application = current as? UIApplication {
+                application.open(url, options: [:], completionHandler: nil)
+                return
+            }
+            responder = current.next
+        }
+    }
+
+    // MARK: GIFs
+
+    private func showGifPanel(query: String?) {
+        dismissPanels()
+        let panel = GifPanel(client: giphy, isDark: isDark, query: query)
+        panel.delegate = self
+        gifPanel = panel
+        lastGifQuery = query
+        presentPanel(panel)
+
+        guard hasFullAccess else {
+            panel.setState(.needsSetup("""
+                GIFs need a quick one-time setup.
+                Turn on Full Access so the keyboard can fetch GIFs and copy them for pasting, \
+                and add a free Giphy key so it can search them.
+                """))
+            return
+        }
+        checkClipboard() // picks up a key the app just sent
+        guard let key = settings.giphyKey, !key.isEmpty else {
+            panel.setState(.needsSetup("""
+                Almost there! GIFs come from Giphy, which needs a free key.
+                The app walks you through getting one (about 2 minutes).
+                """))
+            return
+        }
+        giphy.apiKey = key
+        loadGifs(query: query)
+    }
+
+    private func loadGifs(query: String?) {
+        guard let panel = gifPanel else { return }
+        giphy.apiKey = settings.giphyKey
+        panel.setState(.loading)
+        let completion: (Result<[GifItem], GiphyClient.Failure>) -> Void = { [weak self, weak panel] result in
+            guard let self, let panel, panel === self.gifPanel else { return }
+            switch result {
+            case .success(let items):
+                panel.setState(.items(items))
+            case .failure(.badKey):
+                panel.setState(.needsSetup("Giphy didn't accept your key. Check it in the BetterBoard app."))
+            case .failure(.offline):
+                panel.setState(.message("Can't reach Giphy. Check your internet connection."))
+            case .failure(.server):
+                panel.setState(.message("Giphy isn't responding right now. Try again in a moment."))
+            }
+        }
+        if let query, !query.isEmpty {
+            giphy.search(query, completion: completion)
+        } else {
+            giphy.trending(completion: completion)
+        }
+    }
+
+    private func startGifSearch() {
+        gifPanel?.removeFromSuperview()
+        gifPanel = nil
+        let field = GifSearchField(isDark: isDark)
+        field.onCancel = { [weak self] in
+            guard let self else { return }
+            self.showGifPanel(query: self.lastGifQuery)
+        }
+        field.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(field)
+        NSLayoutConstraint.activate([
+            field.topAnchor.constraint(equalTo: view.topAnchor),
+            field.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            field.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            field.heightAnchor.constraint(equalToConstant: Metrics.barHeight),
+        ])
+        gifSearchField = field
+        gifQuery = ""
+        if keyboardView.mode != .letters { keyboardView.mode = .letters }
+        keyboardView.returnKeyType = .search
+        keyboardView.isHidden = false
+        suggestionBar.isHidden = true
+        shiftState = .off
+    }
+
+    func gifPanelClose(_ panel: GifPanel) {
+        dismissPanels()
+    }
+
+    func gifPanelBeginSearch(_ panel: GifPanel) {
+        startGifSearch()
+    }
+
+    func gifPanelOpenSetup(_ panel: GifPanel) {
+        openApp("betterboard://setup/gifs")
+    }
+
+    func gifPanel(_ panel: GifPanel, didSelectCategory query: String?) {
+        lastGifQuery = query
+        loadGifs(query: query)
+    }
+
+    func gifPanel(_ panel: GifPanel, didPick item: GifItem) {
+        panel.showToast("Copying GIF…")
+        giphy.download(item.shareURL) { [weak self, weak panel] data in
+            guard let self, let panel else { return }
+            guard let data else {
+                panel.showToast("Couldn't download that GIF")
+                return
+            }
+            // Keyboards can only type text, so the GIF goes on the clipboard (as Gboard does).
+            UIPasteboard.general.setData(data, forPasteboardType: UTType.gif.identifier)
+            self.clipboard.ignoreCurrentClipboard()
+            panel.showToast("GIF copied! Tap the text box and choose Paste")
+        }
+    }
+
+    // MARK: Clipboard
+
+    private func showClipboardPanel() {
+        dismissPanels()
+        if hasFullAccess { checkClipboard() }
+        let panel = ClipboardPanel(store: clipboard, isDark: isDark, hasFullAccess: hasFullAccess)
+        panel.delegate = self
+        clipboardPanel = panel
+        presentPanel(panel)
+    }
+
+    func clipboardPanelClose(_ panel: ClipboardPanel) {
+        dismissPanels()
+    }
+
+    func clipboardPanelOpenSetup(_ panel: ClipboardPanel) {
+        openApp("betterboard://setup/clipboard")
+    }
+
+    func clipboardPanel(_ panel: ClipboardPanel, didPick text: String) {
+        resyncMirrorIfIdle()
+        insert(text)
+        resetWordOffsets()
+        lastCorrection = nil
+        lastKeyWasSpace = false
+        dismissPanels()
     }
 }

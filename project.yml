@@ -39,7 +39,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.leisurp.betterboard.keyboard
         INFOPLIST_FILE: Support/Keyboard-Info.plist
         PRODUCT_NAME: BetterBoardKeyboard
-        APPLICATION_EXTENSION_API_ONLY: YES
+        # NO so the keyboard can open the BetterBoard app (setup links).
+        APPLICATION_EXTENSION_API_ONLY: NO
 
 schemes:
   BetterBoard:

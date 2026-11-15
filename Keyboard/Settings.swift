@@ -65,6 +65,12 @@ final class KeyboardSettings {
         set { defaults.set(newValue, forKey: Key.nextWord) }
     }
 
+    /// Your Giphy API key (sent from the BetterBoard app during GIF setup).
+    var giphyKey: String? {
+        get { defaults.string(forKey: "giphyKey") }
+        set { defaults.set(newValue, forKey: "giphyKey") }
+    }
+
     /// Show emoji for words in the suggestion bar (Gboard "Show emoji suggestions").
     var emojiSuggestions: Bool {
         get { defaults.bool(forKey: Key.emojiSuggestions) }
