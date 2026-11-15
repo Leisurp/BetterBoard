@@ -11,6 +11,24 @@ protocol KeyboardViewDelegate: AnyObject {
     func keyboardViewShiftUp(_ view: KeyboardView)
     func keyboardViewDidTapNextKeyboard(_ view: KeyboardView)
     func keyboardViewDidChangeMode(_ view: KeyboardView)
+    /// Slide on the space bar: move the cursor this many characters (negative = left).
+    func keyboardView(_ view: KeyboardView, moveCursorBy offset: Int)
+    func keyboardViewDidEndCursorSlide(_ view: KeyboardView)
+    /// Slide left from backspace: the total number of words that should now be deleted
+    /// since the slide began (going back right lowers it and restores words).
+    func keyboardView(_ view: KeyboardView, deleteSwipeWords words: Int)
+    func keyboardViewDidEndDeleteSwipe(_ view: KeyboardView)
+}
+
+/// Gboard-style slide gestures.
+private enum Slide {
+    /// Space bar: how far the finger moves before it becomes a cursor slide
+    /// (big enough that a rolling thumb while typing fast still types a space).
+    static let cursorStart: CGFloat = 20
+    /// Space bar: finger travel per character moved.
+    static let cursorStep: CGFloat = 10
+    /// Backspace: finger travel (to the left) per word deleted.
+    static let deleteStep: CGFloat = 26
 }
 
 /// Draws every key and handles all touches itself (multi-touch, hold-for-symbol,
@@ -51,6 +69,11 @@ final class KeyboardView: UIView {
         var holdTimer: Timer?
         var repeatTimer: Timer?
         var repeatCount = 0
+        enum SlideKind { case cursor, delete }
+        /// Set once a space-bar or backspace touch turns into a slide gesture.
+        var slide: SlideKind?
+        var slideAnchorX: CGFloat = 0
+        var slideWords = 0
 
         init(key: KeyView) { self.key = key }
 
@@ -214,22 +237,96 @@ final class KeyboardView: UIView {
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
+            guard let state = touchStates[touch] else { continue }
             let point = touch.location(in: self)
-            // Fast typing rolls the finger a little as it lifts. Only treat it as a
-            // deliberate slide to another key once it has moved well away.
-            guard let state = touchStates[touch],
-                  state.key.def.action == .character,
-                  !state.held,
-                  hypot(point.x - state.startPoint.x, point.y - state.startPoint.y) > state.key.bounds.width * 0.75,
-                  let newKey = key(at: point),
-                  newKey !== state.key,
-                  newKey.def.action == .character else { continue }
-            // Slide to a neighbouring key before the hold kicks in.
-            state.stopTimers()
-            state.key.isPressed = false
-            state.key = newKey
-            state.touchPoint = point
-            keyDown(state)
+            switch state.key.def.action {
+            case .space:
+                trackCursorSlide(state, at: point)
+            case .backspace:
+                trackDeleteSwipe(state, at: point)
+            case .character:
+                trackKeySlide(state, at: point)
+            default:
+                break
+            }
+        }
+    }
+
+    private func trackKeySlide(_ state: TouchState, at point: CGPoint) {
+        // Fast typing rolls the finger a little as it lifts. Only treat it as a
+        // deliberate slide to another key once it has moved well away.
+        guard !state.held,
+              hypot(point.x - state.startPoint.x, point.y - state.startPoint.y) > state.key.bounds.width * 0.75,
+              let newKey = key(at: point),
+              newKey !== state.key,
+              newKey.def.action == .character else { return }
+        // Slide to a neighbouring key before the hold kicks in.
+        state.stopTimers()
+        state.key.isPressed = false
+        state.key = newKey
+        state.touchPoint = point
+        keyDown(state)
+    }
+
+    /// Slide left or right on the space bar to move the cursor (Gboard).
+    private func trackCursorSlide(_ state: TouchState, at point: CGPoint) {
+        if state.slide == nil {
+            let dx = point.x - state.startPoint.x
+            guard abs(dx) > Slide.cursorStart else { return }
+            state.slide = .cursor
+            // Start counting from where the slide began, so the first step comes quickly.
+            state.slideAnchorX = state.startPoint.x + (dx > 0 ? Slide.cursorStart : -Slide.cursorStart) * 0.5
+            setOtherKeysDimmed(true, except: state.key)
+        }
+        var moved = 0
+        while point.x - state.slideAnchorX >= Slide.cursorStep {
+            moved += 1
+            state.slideAnchorX += Slide.cursorStep
+        }
+        while state.slideAnchorX - point.x >= Slide.cursorStep {
+            moved -= 1
+            state.slideAnchorX -= Slide.cursorStep
+        }
+        if moved != 0 {
+            delegate?.keyboardView(self, moveCursorBy: moved)
+        }
+    }
+
+    /// Slide left from backspace to delete whole words; slide back right to bring them back.
+    private func trackDeleteSwipe(_ state: TouchState, at point: CGPoint) {
+        let travel = state.startPoint.x - point.x
+        if state.slide == nil {
+            guard travel > Slide.deleteStep else { return }
+            state.slide = .delete
+            state.stopTimers() // no more repeat-delete once it's a swipe
+        }
+        let words = max(0, Int(travel / Slide.deleteStep))
+        if words != state.slideWords {
+            state.slideWords = words
+            delegate?.keyboardView(self, deleteSwipeWords: words)
+        }
+    }
+
+    private func setOtherKeysDimmed(_ dimmed: Bool, except keep: KeyView? = nil) {
+        UIView.animate(withDuration: 0.15) {
+            for key in self.rows.flatMap({ $0 }) where key !== keep {
+                key.alpha = dimmed ? 0.35 : 1
+            }
+        }
+    }
+
+    /// Finishes a slide gesture. Returns true if the touch was a slide.
+    private func endSlide(_ state: TouchState) -> Bool {
+        switch state.slide {
+        case .cursor:
+            setOtherKeysDimmed(false)
+            delegate?.keyboardViewDidEndCursorSlide(self)
+            return true
+        case .delete:
+            delegate?.keyboardViewDidEndDeleteSwipe(self)
+            return true
+        case nil:
+            return false
         }
     }
 
@@ -251,7 +348,7 @@ final class KeyboardView: UIView {
     }
 
     private func commitPendingTouches() {
-        for (touch, state) in touchStates {
+        for (touch, state) in touchStates where state.slide == nil {
             switch state.key.def.action {
             case .shift, .backspace:
                 continue
@@ -266,6 +363,7 @@ final class KeyboardView: UIView {
         for state in touchStates.values {
             state.stopTimers()
             state.key.isPressed = false
+            _ = endSlide(state)
         }
         touchStates.removeAll()
         popup.hide()
@@ -321,6 +419,8 @@ final class KeyboardView: UIView {
             delegate?.keyboardViewShiftUp(self)
             return
         }
+        // A slide on the space bar or backspace has already done its job.
+        if endSlide(state) { return }
         guard commit else { return }
 
         switch key.def.action {

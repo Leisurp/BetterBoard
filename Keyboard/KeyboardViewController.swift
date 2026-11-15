@@ -539,17 +539,7 @@ extension KeyboardViewController: KeyboardViewDelegate {
         lastCorrection = nil
 
         if backspaceWholeWord, !mirror.isEmpty {
-            var count = 0
-            var sawWordChar = false
-            for ch in mirror.reversed() {
-                if ch.isWhitespace || ch.isPunctuation {
-                    if sawWordChar { break }
-                } else {
-                    sawWordChar = true
-                }
-                count += 1
-            }
-            deleteBackward(max(count, 1))
+            deleteBackward(lastWordLength())
             resetWordOffsets()
         } else {
             if mirror.last?.isLetter == true, !wordOffsets.isEmpty {
@@ -559,6 +549,76 @@ extension KeyboardViewController: KeyboardViewDelegate {
         }
         updateAutoShift()
         scheduleSuggestions()
+    }
+
+    /// Characters to delete to remove the last word (plus any spaces or punctuation after it).
+    private func lastWordLength() -> Int {
+        var count = 0
+        var sawWordChar = false
+        for ch in mirror.reversed() {
+            if ch.isWhitespace || ch.isPunctuation {
+                if sawWordChar { break }
+            } else {
+                sawWordChar = true
+            }
+            count += 1
+        }
+        return max(count, 1)
+    }
+
+    // MARK: Slide gestures
+
+    func keyboardView(_ keyboard: KeyboardView, moveCursorBy offset: Int) {
+        guard gifQuery == nil else { return }
+        lastKeyWasSpace = false
+        lastCorrection = nil
+        resetWordOffsets()
+        // The host moves the cursor in UTF-16 units, so step over a whole
+        // character (emoji, accented letters) at a time.
+        for _ in 0..<abs(offset) {
+            if offset < 0 {
+                guard let ch = (proxy.documentContextBeforeInput ?? "").last else { break }
+                proxy.adjustTextPosition(byCharacterOffset: -ch.utf16.count)
+            } else {
+                guard let ch = (proxy.documentContextAfterInput ?? "").first else { break }
+                proxy.adjustTextPosition(byCharacterOffset: ch.utf16.count)
+            }
+        }
+        // The text before the cursor is different now: re-read it once things settle.
+        lastEditTime = 0
+    }
+
+    func keyboardViewDidEndCursorSlide(_ keyboard: KeyboardView) {
+        guard gifQuery == nil else { return }
+        resyncMirror()
+        lastEditTime = 0
+        updateAutoShift()
+        scheduleSuggestions()
+    }
+
+    /// Words removed by the current backspace swipe, newest last, so they can be put back.
+    private var swipeDeleted: [String] = []
+
+    func keyboardView(_ keyboard: KeyboardView, deleteSwipeWords words: Int) {
+        guard gifQuery == nil else { return }
+        if swipeDeleted.isEmpty { resyncMirrorIfIdle() }
+        lastKeyWasSpace = false
+        lastCorrection = nil
+        resetWordOffsets()
+        while swipeDeleted.count < words, !mirror.isEmpty {
+            let length = lastWordLength()
+            swipeDeleted.append(String(mirror.suffix(length)))
+            deleteBackward(length)
+        }
+        while swipeDeleted.count > words, let restored = swipeDeleted.popLast() {
+            insert(restored)
+        }
+        updateAutoShift()
+        scheduleSuggestions()
+    }
+
+    func keyboardViewDidEndDeleteSwipe(_ keyboard: KeyboardView) {
+        swipeDeleted.removeAll()
     }
 
     func keyboardViewShiftDown(_ keyboard: KeyboardView) {
