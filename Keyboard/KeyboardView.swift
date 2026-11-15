@@ -67,6 +67,7 @@ final class KeyboardView: UIView {
         super.init(frame: frame)
         isMultipleTouchEnabled = true
         clipsToBounds = false
+        backgroundColor = Touch.touchableBackground
         popup.hide()
         rebuild()
     }

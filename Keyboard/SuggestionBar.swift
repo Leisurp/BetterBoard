@@ -33,6 +33,7 @@ final class SuggestionBar: UIView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
+        backgroundColor = Touch.touchableBackground
 
         let gearConfig = UIImage.SymbolConfiguration(pointSize: 17, weight: .regular)
         gearButton.setImage(UIImage(systemName: "gearshape", withConfiguration: gearConfig), for: .normal)

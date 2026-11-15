@@ -119,13 +119,41 @@ final class KeyboardViewController: UIInputViewController {
         }
         resyncMirror()
         updateForContext()
+        setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
+    }
+
+    // MARK: System edge gestures
+    //
+    // iOS holds back touches near the screen edges (left/right swipes, home bar)
+    // while it decides whether they're system gestures. That delays or loses fast
+    // taps on edge keys and the bottom row, so ask iOS to defer those gestures and
+    // stop its recognisers from delaying our touches.
+
+    override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge {
+        [.left, .right, .bottom]
+    }
+
+    private func relaxSystemGestures() {
+        var recognizers: [UIGestureRecognizer] = view.window?.gestureRecognizers ?? []
+        var ancestor = view.superview
+        while let current = ancestor {
+            recognizers += current.gestureRecognizers ?? []
+            ancestor = current.superview
+        }
+        for recognizer in recognizers {
+            recognizer.delaysTouchesBegan = false
+            recognizer.delaysTouchesEnded = false
+        }
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        // Stop iOS from delaying touches near the screen edges.
-        view.window?.gestureRecognizers?.forEach { $0.delaysTouchesBegan = false }
-        view.window?.superview?.gestureRecognizers?.forEach { $0.delaysTouchesBegan = false }
+        setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
+        relaxSystemGestures()
+        // Some recognisers are attached after the keyboard appears.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.relaxSystemGestures()
+        }
         // The text field's settings are sometimes only available once the keyboard is on screen.
         resyncMirror()
         updateForContext()

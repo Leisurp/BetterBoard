@@ -17,6 +17,13 @@ struct Theme {
     var shiftActiveIconColor: UIColor { .black }
 }
 
+enum Touch {
+    /// iOS ignores touches on fully transparent pixels of a keyboard extension, so
+    /// taps in the gaps between keys (and on the empty bar) were silently dropped.
+    /// A barely-visible fill makes every point of the keyboard touchable.
+    static let touchableBackground = UIColor(white: 0.5, alpha: 0.02)
+}
+
 /// Sizes in points. Measured from an iPhone 17 Pro Max (440 pt wide) screenshot.
 enum Metrics {
     static let sideMargin: CGFloat = 6.5

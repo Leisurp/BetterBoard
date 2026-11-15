@@ -12,6 +12,7 @@ final class SettingsPanel: UIView {
     init(isDark: Bool) {
         super.init(frame: .zero)
         overrideUserInterfaceStyle = isDark ? .dark : .light
+        backgroundColor = Touch.touchableBackground
         buildUI()
     }
 
