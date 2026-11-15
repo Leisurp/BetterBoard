@@ -17,6 +17,9 @@ protocol SuggestionBarDelegate: AnyObject {
 /// The strip above the keys: ⚙ settings button + three suggestion slots.
 final class SuggestionBar: UIView {
     weak var delegate: SuggestionBarDelegate?
+    /// Taps on empty parts of the bar are passed to this view (the keys), so a
+    /// fast tap that lands just above the top row still types a letter.
+    weak var touchForwardTarget: UIView?
 
     var theme = Theme(isDark: false) {
         didSet { applyTheme() }
@@ -87,6 +90,14 @@ final class SuggestionBar: UIView {
             let x = gearWidth + CGFloat(index + 1) * slotWidth
             line.frame = CGRect(x: x - 0.5, y: (bounds.height - lineHeight) / 2, width: 1, height: lineHeight)
         }
+    }
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        if hit === self, let target = touchForwardTarget, !target.isHidden {
+            return target
+        }
+        return hit
     }
 
     private func applyTheme() {

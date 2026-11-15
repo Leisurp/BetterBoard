@@ -24,15 +24,17 @@ final class KeyPopupView: UIView {
 
     /// - Parameters:
     ///   - keyFrame: the pressed key's frame, in the superview's coordinates.
-    ///   - limits: horizontal area the balloon must stay inside.
+    ///   - limits: area the balloon must stay inside (it can't draw outside the keyboard).
     func show(text: String, keyFrame: CGRect, limits: CGRect, theme: Theme, fontScale: CGFloat) {
         let radius = Metrics.cornerRadius
         let inflate = keyFrame.width * 0.3
-        let bulbHeight = min(keyFrame.height * 1.05, 48)
+        let gap: CGFloat = 3
+        let roomAbove = keyFrame.minY - gap - (limits.minY + 1)
+        let bulbHeight = max(26, min(keyFrame.height * 1.05, 48, roomAbove))
 
         var bulb = CGRect(
             x: keyFrame.minX - inflate,
-            y: keyFrame.minY - 4 - bulbHeight,
+            y: keyFrame.minY - gap - bulbHeight,
             width: keyFrame.width + inflate * 2,
             height: bulbHeight)
         if bulb.minX < limits.minX + 1 { bulb.origin.x = limits.minX + 1 }
@@ -65,7 +67,7 @@ final class KeyPopupView: UIView {
         CATransaction.commit()
 
         label.frame = bulb.offsetBy(dx: -box.minX, dy: -box.minY).insetBy(dx: 2, dy: 0)
-        label.font = .systemFont(ofSize: Metrics.popupFontSize * fontScale)
+        label.font = .systemFont(ofSize: min(Metrics.popupFontSize * fontScale, bulbHeight * 0.85))
         label.textColor = theme.labelColor
         label.text = text
         isHidden = false

@@ -86,7 +86,7 @@ final class KeyView: UIView {
 
         case .nextKeyboard:
             let big = UIImage.SymbolConfiguration(pointSize: Metrics.iconPointSize * 1.15 * fontScale, weight: .regular)
-            iconView.image = UIImage(systemName: "face.smiling.inverse", withConfiguration: big)
+            iconView.image = UIImage(systemName: "face.smiling.fill", withConfiguration: big)
         }
 
         updateColors()

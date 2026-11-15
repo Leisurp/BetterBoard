@@ -378,7 +378,9 @@ final class KeyboardView: UIView {
         bringSubviewToFront(popup)
         popup.show(text: text,
                    keyFrame: state.key.frame,
-                   limits: bounds,
+                   // The suggestion bar above is part of the keyboard, so popups may cover it.
+                   limits: CGRect(x: bounds.minX, y: bounds.minY - Metrics.barHeight,
+                                  width: bounds.width, height: bounds.height + Metrics.barHeight),
                    theme: theme,
                    fontScale: fontScale)
     }

@@ -24,9 +24,11 @@ enum Metrics {
     static let keyHeight: CGFloat = 44
     static let rowGap: CGFloat = 11.5
     static let cornerRadius: CGFloat = 8.5
-    static let topInset: CGFloat = 10
-    static let bottomInset: CGFloat = 4
-    static let barHeight: CGFloat = 44
+    // Measured against Apple's iOS 27 keyboard. iOS adds ~16 pt of its own
+    // padding above third-party keyboards, so the bar is shorter than Apple's.
+    static let topInset: CGFloat = 6.5
+    static let bottomInset: CGFloat = 6.5
+    static let barHeight: CGFloat = 30
 
     static let letterFontSize: CGFloat = 25
     static let labelFontSize: CGFloat = 18

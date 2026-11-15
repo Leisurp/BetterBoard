@@ -76,6 +76,7 @@ final class KeyboardViewController: UIInputViewController {
         super.viewDidLoad()
 
         suggestionBar.delegate = self
+        suggestionBar.touchForwardTarget = keyboardView
         keyboardView.delegate = self
 
         suggestionBar.translatesAutoresizingMaskIntoConstraints = false
@@ -125,6 +126,9 @@ final class KeyboardViewController: UIInputViewController {
         // Stop iOS from delaying touches near the screen edges.
         view.window?.gestureRecognizers?.forEach { $0.delaysTouchesBegan = false }
         view.window?.superview?.gestureRecognizers?.forEach { $0.delaysTouchesBegan = false }
+        // The text field's settings are sometimes only available once the keyboard is on screen.
+        resyncMirror()
+        updateForContext()
     }
 
     override func textDidChange(_ textInput: UITextInput?) {
@@ -235,8 +239,20 @@ final class KeyboardViewController: UIInputViewController {
         }
 
         let before = mirror
+        var capType = proxy.autocapitalizationType ?? .sentences
+        // Some text fields report "none" to third-party keyboards even though Apple's
+        // keyboard capitalises there. Only honour "none" for fields that really
+        // shouldn't capitalise (web addresses, emails, fields without autocorrect).
+        if capType == .none, proxy.autocorrectionType != .no {
+            switch proxy.keyboardType ?? .default {
+            case .URL, .emailAddress, .webSearch, .twitter:
+                break
+            default:
+                capType = .sentences
+            }
+        }
         let shouldCapitalise: Bool
-        switch proxy.autocapitalizationType ?? .sentences {
+        switch capType {
         case .none:
             shouldCapitalise = false
         case .allCharacters:
