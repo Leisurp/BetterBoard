@@ -11,6 +11,8 @@ final class Predictor {
     /// Letters-only previous word → [(next word, count)], most common first.
     private var nextWords: [String: [(word: String, count: Int)]] = [:]
     private var emojiByWord: [String: [String]] = [:]
+    /// Common multi-word continuations ("thank" → "you for your").
+    private var phrases: [String: [String]] = [:]
 
     static let sentenceStart = "<s>"
 
@@ -18,12 +20,15 @@ final class Predictor {
         let bundle = Bundle(for: Predictor.self)
         let bigramURL = bundle.url(forResource: "bigrams", withExtension: "txt")
         let emojiURL = bundle.url(forResource: "emoji", withExtension: "txt")
+        let phrasesURL = bundle.url(forResource: "phrases", withExtension: "txt")
         DispatchQueue.global(qos: .utility).async {
             let next = Self.loadBigrams(bigramURL)
             let emoji = Self.loadEmoji(emojiURL)
+            let phrases = Self.loadPhrases(phrasesURL)
             DispatchQueue.main.async {
                 self.nextWords = next
                 self.emojiByWord = emoji
+                self.phrases = phrases
                 self.isReady = true
             }
         }
@@ -59,6 +64,17 @@ final class Predictor {
         return result
     }
 
+    private static func loadPhrases(_ url: URL?) -> [String: [String]] {
+        guard let url, let text = try? String(contentsOf: url, encoding: .utf8) else { return [:] }
+        var result: [String: [String]] = [:]
+        for line in text.split(whereSeparator: { $0.isNewline }) {
+            let parts = line.split(separator: "\t", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            result[String(parts[0])] = parts[1].split(separator: " ").map { display(String($0)) }
+        }
+        return result
+    }
+
     static func lettersOnly(_ word: String) -> String {
         String(word.lowercased().unicodeScalars.filter { $0.value >= 97 && $0.value <= 122 }
             .map(Character.init))
@@ -87,6 +103,27 @@ final class Predictor {
             if result.count == limit { break }
         }
         return result
+    }
+
+    /// The most likely next words as a phrase ("see" → ["you", "soon"]), continuing
+    /// only while each next word is a clear favourite. Empty if nothing is certain enough.
+    func phrase(after previous: String?, maxWords: Int = 3) -> [String] {
+        guard isReady else { return [] }
+        if let previous, let known = phrases[previous.lowercased()] {
+            return Array(known.prefix(maxWords))
+        }
+        var key = previous.map { $0 == Self.sentenceStart ? $0 : Self.lettersOnly($0) } ?? Self.sentenceStart
+        var words: [String] = []
+        while words.count < maxWords, let list = nextWords[key], let top = list.first {
+            let total = list.reduce(0) { $0 + $1.count }
+            let share = Double(top.count) / Double(max(total, 1))
+            // The first word is just the best guess; later ones must be very likely.
+            if !words.isEmpty && (share < 0.45 || top.count < 8) { break }
+            if words.contains(top.word) { break }
+            words.append(Self.display(top.word))
+            key = Self.lettersOnly(top.word)
+        }
+        return words.count >= 2 ? words : []
     }
 
     /// Words that often follow `previous` and start with `prefix` (letters only).

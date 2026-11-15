@@ -282,8 +282,10 @@ final class GifSearchField: UIView {
     var onCancel: (() -> Void)?
     private let label = UILabel()
     private let cancel = UIButton(type: .system)
+    private let placeholder: String
 
-    init(isDark: Bool) {
+    init(isDark: Bool, placeholder: String = "Search GIFs") {
+        self.placeholder = placeholder
         super.init(frame: .zero)
         overrideUserInterfaceStyle = isDark ? .dark : .light
         backgroundColor = Touch.touchableBackground
@@ -322,7 +324,7 @@ final class GifSearchField: UIView {
 
     func setQuery(_ query: String) {
         if query.isEmpty {
-            label.text = "Search GIFs"
+            label.text = placeholder
             label.textColor = .secondaryLabel
         } else {
             label.text = query + "|"

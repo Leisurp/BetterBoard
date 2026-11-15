@@ -11,6 +11,14 @@ struct Suggestion: Equatable {
     var isEmoji = false
     /// A next-word prediction (shown before you start typing a word).
     var isPrediction = false
+    /// Shown instead of `text` (e.g. "📋 Paste: …").
+    var label: String?
+    /// How many characters before the cursor it replaces (nil = the current word).
+    var replaceCount: Int?
+    /// Whether a space follows it.
+    var addsSpace = true
+    /// Just-copied text offered for pasting.
+    var isPaste = false
 }
 
 protocol SuggestionBarDelegate: AnyObject {
@@ -155,7 +163,7 @@ final class SuggestionBar: UIView {
         hideRemoveStrip()
         for (index, button) in slots.enumerated() {
             if let s = padded[index] {
-                button.setTitle(s.text, for: .normal)
+                button.setTitle(s.label ?? s.text, for: .normal)
                 button.titleLabel?.font = .systemFont(ofSize: s.isEmoji ? 22 : 17,
                                                       weight: s.isAutocorrect ? .semibold : .regular)
                 button.isHidden = false

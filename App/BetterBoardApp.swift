@@ -14,6 +14,7 @@ enum SetupRoute: Hashable {
     case gifs
     case clipboard
     case theme
+    case shortcuts
 
     init?(url: URL) {
         guard url.scheme == "betterboard" else { return nil }
@@ -21,6 +22,7 @@ enum SetupRoute: Hashable {
         case "gifs": self = .gifs
         case "clipboard": self = .clipboard
         case "theme": self = .theme
+        case "shortcuts": self = .shortcuts
         default: return nil
         }
     }
@@ -52,6 +54,9 @@ struct ContentView: View {
                     NavigationLink(value: SetupRoute.theme) {
                         Label("Custom theme", systemImage: "paintpalette")
                     }
+                    NavigationLink(value: SetupRoute.shortcuts) {
+                        Label("Shortcuts & your info", systemImage: "text.badge.plus")
+                    }
                 }
 
                 Section("Try it") {
@@ -73,6 +78,7 @@ struct ContentView: View {
                 case .gifs: GifSetupView()
                 case .clipboard: ClipboardSetupView()
                 case .theme: ThemeEditorView()
+                case .shortcuts: ShortcutsView()
                 }
             }
         }

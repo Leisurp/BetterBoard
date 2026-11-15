@@ -30,7 +30,7 @@ SOFTWARE.
 
 ## Keyboard/Resources/bigrams.txt
 
-Next-word counts computed from English sentences in [Tatoeba](https://tatoeba.org) (CC BY 2.0 FR). Built with `scripts/build_data.py`.
+Next-word counts and phrase suggestions computed from English sentences in [Tatoeba](https://tatoeba.org) (CC BY 2.0 FR). Built with `scripts/build_data.py` and `scripts/build_phrases.py`. The emoji panel list (`emoji_list.txt`) is built from Unicode data with `scripts/build_emoji_list.py`.
 
 ## Keyboard/Resources/emoji.txt
 

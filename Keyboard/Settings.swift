@@ -45,6 +45,14 @@ final class KeyboardSettings {
         static let keyBorders = "keyBorders"
         static let theme = "theme"
         static let autoSpace = "autoSpace"
+        static let soundVolume = "soundVolume"
+        static let vibrationStrength = "vibrationStrength"
+        static let blockOffensive = "blockOffensive"
+        static let showSuggestions = "showSuggestions"
+        static let learnWords = "learnWords"
+        static let phrasePredictions = "phrasePredictions"
+        static let emojiPanel = "emojiPanel"
+        static let pasteSuggestion = "pasteSuggestion"
     }
 
     private init() {
@@ -66,7 +74,63 @@ final class KeyboardSettings {
             Key.keyBorders: true,
             Key.theme: ThemeStyle.system.rawValue,
             Key.autoSpace: false,
+            Key.soundVolume: 0.6,
+            Key.vibrationStrength: 0.6,
+            Key.blockOffensive: true,
+            Key.showSuggestions: true,
+            Key.learnWords: true,
+            Key.phrasePredictions: true,
+            Key.emojiPanel: true,
+            Key.pasteSuggestion: true,
         ])
+    }
+
+    /// Key click volume, 0...1.
+    var soundVolume: Double {
+        get { min(max(defaults.double(forKey: Key.soundVolume), 0), 1) }
+        set { defaults.set(min(max(newValue, 0), 1), forKey: Key.soundVolume) }
+    }
+
+    /// Key vibration strength, 0...1.
+    var vibrationStrength: Double {
+        get { min(max(defaults.double(forKey: Key.vibrationStrength), 0), 1) }
+        set { defaults.set(min(max(newValue, 0), 1), forKey: Key.vibrationStrength) }
+    }
+
+    /// Never suggest swear words.
+    var blockOffensive: Bool {
+        get { defaults.bool(forKey: Key.blockOffensive) }
+        set { defaults.set(newValue, forKey: Key.blockOffensive) }
+    }
+
+    /// Show word suggestions in the bar (autocorrect still works when off).
+    var showSuggestions: Bool {
+        get { defaults.bool(forKey: Key.showSuggestions) }
+        set { defaults.set(newValue, forKey: Key.showSuggestions) }
+    }
+
+    /// Learn words you type that aren't in the dictionary.
+    var learnWords: Bool {
+        get { defaults.bool(forKey: Key.learnWords) }
+        set { defaults.set(newValue, forKey: Key.learnWords) }
+    }
+
+    /// Suggest the next few words together ("see you" → "see you soon").
+    var phrasePredictions: Bool {
+        get { defaults.bool(forKey: Key.phrasePredictions) }
+        set { defaults.set(newValue, forKey: Key.phrasePredictions) }
+    }
+
+    /// The emoji key opens BetterBoard's emoji panel (off = iPhone's emoji keyboard).
+    var emojiPanel: Bool {
+        get { defaults.bool(forKey: Key.emojiPanel) }
+        set { defaults.set(newValue, forKey: Key.emojiPanel) }
+    }
+
+    /// Offer just-copied text in the suggestion bar.
+    var pasteSuggestion: Bool {
+        get { defaults.bool(forKey: Key.pasteSuggestion) }
+        set { defaults.set(newValue, forKey: Key.pasteSuggestion) }
     }
 
     /// Click sound on every key press (needs Full Access).

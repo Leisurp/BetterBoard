@@ -6,6 +6,10 @@ final class SettingsPanel: UIView {
     var onResetLearned: (() -> Void)?
     /// Opens the theme editor in the BetterBoard app.
     var onOpenThemeEditor: (() -> Void)?
+    /// Opens shortcuts & personal info in the BetterBoard app.
+    var onOpenShortcuts: (() -> Void)?
+    /// Plays a click / vibration so you can hear and feel the new strength.
+    var onPreviewFeedback: (() -> Void)?
 
     private let settings = KeyboardSettings.shared
     private let scrollView = UIScrollView()
@@ -74,7 +78,10 @@ final class SettingsPanel: UIView {
         addToggle("Number row", \.numberRow)
         addHeightPicker()
         addToggle("Sound on key press", \.keySound)
+        addSlider("Sound volume", \.soundVolume)
         addToggle("Vibrate on key press", \.vibrate)
+        addSlider("Vibration strength", \.vibrationStrength)
+        addToggle("Emoji key opens BetterBoard emoji", \.emojiPanel)
         if !hasFullAccess {
             addNote("Sound and vibration need Full Access: Settings › General › Keyboard › Keyboards › BetterBoard.")
         }
@@ -88,8 +95,16 @@ final class SettingsPanel: UIView {
 
         addSection("TYPING")
         addToggle("Auto-correction", \.autocorrect)
+        addToggle("Show suggestions", \.showSuggestions)
         addToggle("Next-word suggestions", \.nextWord)
+        addToggle("Phrase suggestions", \.phrasePredictions)
         addToggle("Emoji suggestions", \.emojiSuggestions)
+        addToggle("Suggest copied text", \.pasteSuggestion)
+        addToggle("Block offensive words", \.blockOffensive)
+        addToggle("Learn new words", \.learnWords)
+        addLinkButton("Shortcuts & your email, phone and address: set up in the BetterBoard app \u{203A}") { [weak self] in
+            self?.onOpenShortcuts?()
+        }
         addToggle("Auto-capitalisation", \.autocap)
         addToggle("Double-space full stop", \.doubleSpacePeriod)
         addToggle("Auto-space after punctuation", \.autoSpace)
@@ -143,6 +158,20 @@ final class SettingsPanel: UIView {
             self?.settings[keyPath: keyPath] = sender.isOn
         }, for: .valueChanged)
         stack.addArrangedSubview(row(title, toggle))
+    }
+
+    private func addSlider(_ title: String, _ keyPath: ReferenceWritableKeyPath<KeyboardSettings, Double>) {
+        let slider = UISlider()
+        slider.minimumValue = 0
+        slider.maximumValue = 1
+        slider.value = Float(settings[keyPath: keyPath])
+        slider.widthAnchor.constraint(equalToConstant: 170).isActive = true
+        slider.addAction(UIAction { [weak self] action in
+            guard let sender = action.sender as? UISlider else { return }
+            self?.settings[keyPath: keyPath] = Double(sender.value)
+            self?.onPreviewFeedback?()
+        }, for: .valueChanged)
+        stack.addArrangedSubview(row(title, slider))
     }
 
     private func addDelaySlider() {

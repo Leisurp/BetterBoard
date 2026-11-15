@@ -2,6 +2,31 @@ import UIKit
 
 enum KeyboardMode {
     case letters, numbers, symbols
+    /// Big 3×4 keypad for number and phone fields.
+    case numberPad
+}
+
+/// What kind of text box the keyboard is typing into.
+enum FieldKind: Equatable {
+    case normal
+    /// Web address: "/" and ".com" keys.
+    case url
+    /// Email: "@" key.
+    case email
+    case number, phone, decimal
+
+    init(_ type: UIKeyboardType) {
+        switch type {
+        case .URL, .webSearch: self = type == .URL ? .url : .normal
+        case .emailAddress: self = .email
+        case .numberPad, .asciiCapableNumberPad: self = .number
+        case .phonePad, .namePhonePad: self = type == .phonePad ? .phone : .normal
+        case .decimalPad: self = .decimal
+        default: self = .normal
+        }
+    }
+
+    var usesNumberPad: Bool { self == .number || self == .phone || self == .decimal }
 }
 
 enum ShiftState {
@@ -41,6 +66,11 @@ struct KeyDef {
         KeyDef(action: .character, text: text, hint: hint, width: .units(width))
     }
 
+    /// A key that shares the row's width equally with the other flexible keys.
+    static func flexChar(_ text: String) -> KeyDef {
+        KeyDef(action: .character, text: text, hint: nil, width: .flex)
+    }
+
     static func special(_ action: KeyAction, _ text: String = "", width: KeyWidth) -> KeyDef {
         KeyDef(action: action, text: text, hint: nil, width: width)
     }
@@ -76,6 +106,9 @@ enum Layout {
         "z": ["ž", "ź", "ż"],
         ".": ["?", "!", "'", "\"", ":", ";", "-", "…"],
         ",": ["'", "\"", "-", "/", "@"],
+        ".com": [".com.au", ".net", ".org", ".au", ".net.au", ".edu", ".co"],
+        "@": ["#", "_", "-", "+"],
+        "+": ["*", "#", ",", ";"],
         // Numbers and symbols pages (like Apple's keyboard).
         "0": ["°"],
         "-": ["–", "—", "•"],
@@ -93,8 +126,22 @@ enum Layout {
     static let bottomModeWidth: CGFloat = 1.31
     static let returnWidth: CGFloat = 1.89
 
-    static func rows(mode: KeyboardMode, numberRow: Bool) -> [KeyRow] {
+    static func rows(mode: KeyboardMode, numberRow: Bool, field: FieldKind = .normal) -> [KeyRow] {
         switch mode {
+        case .numberPad:
+            let corner: KeyDef
+            switch field {
+            case .phone: corner = .flexChar("+")
+            case .decimal: corner = .flexChar(".")
+            default: corner = .special(.mode(.letters), "ABC", width: .flex)
+            }
+            return [
+                KeyRow(keys: "123".map { .flexChar(String($0)) }),
+                KeyRow(keys: "456".map { .flexChar(String($0)) }),
+                KeyRow(keys: "789".map { .flexChar(String($0)) }),
+                KeyRow(keys: [corner, .flexChar("0"), .special(.backspace, width: .flex)]),
+            ]
+
         case .letters:
             var rows: [KeyRow] = []
             if numberRow {
@@ -107,7 +154,7 @@ enum Layout {
                     + letterRow("zxcvbnm").keys
                     + [KeyDef.special(.backspace, width: .units(sideKeyWidth))],
                 pinEnds: true))
-            rows.append(bottomRow(modeKey: .special(.mode(.numbers), "123", width: .units(bottomModeWidth))))
+            rows.append(bottomRow(modeKey: .special(.mode(.numbers), "123", width: .units(bottomModeWidth)), field: field))
             return rows
 
         case .numbers:
@@ -115,7 +162,7 @@ enum Layout {
                 charRow("1234567890"),
                 KeyRow(keys: ["-", "/", ":", ";", "(", ")", "$", "&", "@", "\""].map { KeyDef.char($0) }),
                 punctuationRow(modeKey: .special(.mode(.symbols), "#+=", width: .units(sideKeyWidth))),
-                bottomRow(modeKey: .special(.mode(.letters), "ABC", width: .units(bottomModeWidth))),
+                bottomRow(modeKey: .special(.mode(.letters), "ABC", width: .units(bottomModeWidth)), field: field),
             ]
 
         case .symbols:
@@ -123,7 +170,7 @@ enum Layout {
                 KeyRow(keys: ["[", "]", "{", "}", "#", "%", "^", "*", "+", "="].map { KeyDef.char($0) }),
                 KeyRow(keys: ["_", "\\", "|", "~", "<", ">", "€", "£", "¥", "•"].map { KeyDef.char($0) }),
                 punctuationRow(modeKey: .special(.mode(.numbers), "123", width: .units(sideKeyWidth))),
-                bottomRow(modeKey: .special(.mode(.letters), "ABC", width: .units(bottomModeWidth))),
+                bottomRow(modeKey: .special(.mode(.letters), "ABC", width: .units(bottomModeWidth)), field: field),
             ]
         }
     }
@@ -144,10 +191,34 @@ enum Layout {
             pinEnds: true)
     }
 
-    private static func bottomRow(modeKey: KeyDef) -> KeyRow {
+    private static func bottomRow(modeKey: KeyDef, field: FieldKind) -> KeyRow {
+        switch field {
+        case .url:
+            // Web addresses: "/" and ".com" (hold for .com.au, .net…), like Apple / Gboard.
+            return KeyRow(keys: [
+                modeKey,
+                .char("/"),
+                .special(.nextKeyboard, width: .units(1.1)),
+                .special(.space, width: .flex),
+                .char("."),
+                .char(".com", width: 1.45),
+                .special(.returnKey, width: .units(1.6)),
+            ])
+        case .email:
+            return KeyRow(keys: [
+                modeKey,
+                .char("@"),
+                .special(.nextKeyboard, width: .units(1.1)),
+                .special(.space, width: .flex),
+                .char("."),
+                .special(.returnKey, width: .units(returnWidth)),
+            ])
+        default:
+            break
+        }
         // Gboard-style: comma between 123 and emoji, with a slightly narrower
         // emoji key and space bar to make room.
-        KeyRow(keys: [
+        return KeyRow(keys: [
             modeKey,
             .char(","),
             .special(.nextKeyboard, width: .units(1.1)),

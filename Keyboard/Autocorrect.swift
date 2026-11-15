@@ -30,6 +30,12 @@ final class Autocorrector {
     private var checkerCache: [String: Bool] = [:]
 
     private let learnedKey = "learnedWords"
+    private var blockOffensive: Bool { KeyboardSettings.shared.blockOffensive }
+    private var learningOn: Bool { KeyboardSettings.shared.learnWords }
+
+    private func isBlocked(_ lower: String) -> Bool {
+        blockOffensive && Lexicon.blocked.contains(lower)
+    }
     /// Words (and emoji) you've told the keyboard to stop suggesting, lowercased.
     private var removed: Set<String>
     private let removedKey = "removedWords"
@@ -52,16 +58,24 @@ final class Autocorrector {
 
     /// Suggestions before a word is started: likely next words (best in the middle,
     /// like Gboard) and an emoji for the previous word on the right.
-    func predictions(previous: String?, capitalise: Bool, showEmoji: Bool) -> [Suggestion?] {
-        var words = predictor.predictions(after: previous, limit: 6)
-            .filter { !Lexicon.blocked.contains($0.lowercased()) && !removed.contains($0.lowercased()) }
-        if capitalise {
-            words = words.map { $0.prefix(1).uppercased() + $0.dropFirst() }
+    func predictions(previous: String?, capitalise: Bool, showEmoji: Bool, phrases: Bool) -> [Suggestion?] {
+        func capitalised(_ text: String) -> String {
+            capitalise ? text.prefix(1).uppercased() + text.dropFirst() : text
         }
+        let words = predictor.predictions(after: previous, limit: 6)
+            .filter { !isBlocked($0.lowercased()) && !removed.contains($0.lowercased()) }
+            .map(capitalised)
         var slots: [Suggestion?] = [nil, nil, nil]
         let order = [1, 0, 2] // best word in the middle
         for (rank, word) in words.prefix(3).enumerated() {
             slots[order[rank]] = Suggestion(text: word, isPrediction: true)
+        }
+        // Several words at once when the next ones are very likely (Smart Compose-ish).
+        if phrases {
+            let phrase = predictor.phrase(after: previous)
+            if phrase.count >= 2, !phrase.contains(where: { isBlocked($0.lowercased()) || removed.contains($0.lowercased()) }) {
+                slots[0] = Suggestion(text: capitalised(phrase.joined(separator: " ")), isPrediction: true)
+            }
         }
         if showEmoji, let previous, previous != Predictor.sentenceStart,
            let emoji = predictor.emoji(for: previous).first(where: { !removed.contains($0) }) {
@@ -160,7 +174,7 @@ final class Autocorrector {
         var alternatives: [Alternative] = []
         var seen: Set<String> = [lower]
         func consider(_ c: WordModel.Candidate, penalty: Float, barOnly: Bool) {
-            guard !c.blocked, let text = localForm(c) else { return }
+            guard !(c.blocked && blockOffensive), let text = localForm(c) else { return }
             let key = text.lowercased()
             guard !seen.contains(key), !removed.contains(key) else { return }
             seen.insert(key)
@@ -176,7 +190,7 @@ final class Autocorrector {
         let typedLetters = Predictor.lettersOnly(word)
         for (rank, p) in predictor.predictions(after: previous, startingWith: typedLetters).prefix(3).enumerated() {
             let key = p.word.lowercased()
-            guard !seen.contains(key), !Lexicon.blocked.contains(key), !removed.contains(key) else { continue }
+            guard !seen.contains(key), !isBlocked(key), !removed.contains(key) else { continue }
             seen.insert(key)
             alternatives.append(Alternative(text: matchCase(p.word, to: word),
                                             score: -30 + Float(rank), cost: 0, barOnly: true))
@@ -227,7 +241,7 @@ final class Autocorrector {
     /// that the dictionary doesn't know get learned (Gboard does the same).
     func noteCommitted(_ word: String) {
         let lower = word.lowercased()
-        guard word.count >= 2, Self.encode(word) != nil, learned[lower] == nil,
+        guard learningOn, word.count >= 2, Self.encode(word) != nil, learned[lower] == nil,
               !removed.contains(lower) else { return }
         if checkerKnows(word) || checkerKnows(lower) { return }
         if model.isReady, let letters = Self.encode(word),
@@ -242,7 +256,7 @@ final class Autocorrector {
 
     func learn(_ word: String) {
         let lower = word.lowercased()
-        guard !lower.isEmpty, Self.encode(word) != nil else { return }
+        guard learningOn, !lower.isEmpty, Self.encode(word) != nil else { return }
         // Choosing a word yourself brings it back if it was removed.
         if removed.remove(lower) != nil {
             UserDefaults.standard.set(Array(removed), forKey: removedKey)

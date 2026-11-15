@@ -10,11 +10,19 @@ final class KeyboardViewController: UIInputViewController {
     private let keyboardView = KeyboardView()
     private var settingsPanel: SettingsPanel?
     private var editPanel: EditPanel?
+    private var emojiPanel: EmojiPanel?
+    private var emojiStrip: EmojiResultsStrip?
+    /// The search box is searching emoji (not GIFs).
+    private var searchIsEmoji = false
+    private var barHeightConstraint: NSLayoutConstraint?
     /// Photo behind the keys (custom theme).
     private let backgroundImageView = UIImageView()
     private let feedback = KeyFeedback()
     /// Cached: reading hasFullAccess on every key press isn't free.
     private var fullAccess = false
+    /// Text copied in the last little while, offered in the suggestion bar (Gboard).
+    private var recentCopy: (text: String, date: Date)?
+    private let recentCopyLifetime: TimeInterval = 120
 
     // GIFs and clipboard history (need Full Access).
     private let clipboard = ClipboardStore()
@@ -131,13 +139,16 @@ final class KeyboardViewController: UIInputViewController {
             suggestionBar.topAnchor.constraint(equalTo: view.topAnchor),
             suggestionBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             suggestionBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            suggestionBar.heightAnchor.constraint(equalToConstant: Metrics.barHeight),
 
             keyboardView.topAnchor.constraint(equalTo: suggestionBar.bottomAnchor),
             keyboardView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             keyboardView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             keyboardView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
+
+        let barHeight = suggestionBar.heightAnchor.constraint(equalToConstant: Metrics.barHeight)
+        barHeight.isActive = true
+        barHeightConstraint = barHeight
 
         let height = view.heightAnchor.constraint(equalToConstant: totalHeight)
         height.priority = UILayoutPriority(999)
@@ -153,10 +164,13 @@ final class KeyboardViewController: UIInputViewController {
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        switch proxy.keyboardType ?? .default {
-        case .numberPad, .decimalPad, .numbersAndPunctuation, .asciiCapableNumberPad, .phonePad:
+        let field = FieldKind(proxy.keyboardType ?? .default)
+        keyboardView.field = field
+        if field.usesNumberPad {
+            keyboardView.mode = .numberPad
+        } else if proxy.keyboardType == .numbersAndPunctuation {
             keyboardView.mode = .numbers
-        default:
+        } else {
             keyboardView.mode = .letters
         }
         resyncMirror()
@@ -232,7 +246,7 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private var totalHeight: CGFloat {
-        Metrics.barHeight + keyboardView.preferredHeight
+        (barHeightConstraint?.constant ?? Metrics.barHeight) + keyboardView.preferredHeight
     }
 
     private func updateHeight() {
@@ -242,6 +256,16 @@ final class KeyboardViewController: UIInputViewController {
     private func updateForContext() {
         if gifQuery == nil {
             keyboardView.returnKeyType = proxy.returnKeyType ?? .default
+            // Moved to a different kind of text box (email, web address, phone number…).
+            let field = FieldKind(proxy.keyboardType ?? .default)
+            if field != keyboardView.field {
+                keyboardView.field = field
+                if field.usesNumberPad {
+                    keyboardView.mode = .numberPad
+                } else if keyboardView.mode == .numberPad {
+                    keyboardView.mode = .letters
+                }
+            }
         }
         updateAppearance()
         updateAutoShift()
@@ -446,17 +470,59 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func refreshSuggestions() {
-        if let analysis = analysis() {
-            suggestionBar.setSuggestions(analysis.suggestions)
-        } else if currentWord().isEmpty, fieldAllowsCorrection, settings.nextWord,
-                  keyboardView.mode == .letters, mirror.isEmpty || mirror.last?.isWhitespace == true {
-            // Before a word is started: predict the next word, like Gboard.
-            suggestionBar.setSuggestions(autocorrector.predictions(previous: previousWord(),
-                                                                   capitalise: shiftState != .off,
-                                                                   showEmoji: settings.emojiSuggestions))
-        } else {
+        guard settings.showSuggestions else {
             suggestionBar.setSuggestions([])
+            return
         }
+        var slots: [Suggestion?]
+        let atWordStart = mirror.isEmpty || mirror.last?.isWhitespace == true
+        if let analysis = analysis() {
+            slots = analysis.suggestions
+        } else if currentWord().isEmpty, fieldAllowsCorrection, settings.nextWord,
+                  keyboardView.mode == .letters, atWordStart {
+            // Before a word is started: predict the next word, like Gboard.
+            slots = autocorrector.predictions(previous: previousWord(),
+                                              capitalise: shiftState != .off,
+                                              showEmoji: settings.emojiSuggestions,
+                                              phrases: settings.phrasePredictions)
+        } else {
+            slots = [nil, nil, nil]
+        }
+        while slots.count < 3 { slots.append(nil) }
+
+        // Your saved email / phone / address / shortcuts, in the middle.
+        let token = currentToken()
+        let emailField = keyboardView.field == .email
+        let personal = ShortcutStore.matches(for: token, emailField: emailField)
+        if let first = personal.first {
+            slots[1] = Suggestion(text: first, replaceCount: token.count, addsSpace: !emailField)
+            if personal.count > 1 {
+                slots[2] = Suggestion(text: personal[1], replaceCount: token.count, addsSpace: !emailField)
+            }
+        }
+
+        // Just-copied text, on the left, until it's used or gets old (Gboard).
+        if settings.pasteSuggestion, atWordStart, let copy = recentCopy {
+            if Date().timeIntervalSince(copy.date) < recentCopyLifetime, !mirror.hasSuffix(copy.text) {
+                let preview = copy.text.replacingOccurrences(of: "\n", with: " ")
+                slots[0] = Suggestion(text: copy.text, label: "📋 " + String(preview.prefix(24)),
+                                      replaceCount: 0, addsSpace: false, isPaste: true)
+            } else {
+                recentCopy = nil
+            }
+        }
+        suggestionBar.setSuggestions(slots)
+    }
+
+    /// Everything typed since the last space (for emails, shortcuts…).
+    private func currentToken() -> String {
+        var chars: [Character] = []
+        for ch in mirror.reversed() {
+            if ch.isWhitespace { break }
+            chars.append(ch)
+            if chars.count > 80 { return "" }
+        }
+        return String(chars.reversed())
     }
 
     // MARK: Settings panel
@@ -468,6 +534,11 @@ final class KeyboardViewController: UIInputViewController {
         panel.onDone = { [weak self] in self?.hideSettings() }
         panel.onResetLearned = { [weak self] in self?.autocorrector.resetLearned() }
         panel.onOpenThemeEditor = { [weak self] in self?.openApp("betterboard://setup/theme") }
+        panel.onOpenShortcuts = { [weak self] in self?.openApp("betterboard://setup/shortcuts") }
+        panel.onPreviewFeedback = { [weak self] in
+            guard let self else { return }
+            self.feedback.preview(hasFullAccess: self.fullAccess)
+        }
         panel.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(panel)
         NSLayoutConstraint.activate([
@@ -707,7 +778,11 @@ extension KeyboardViewController: KeyboardViewDelegate {
     }
 
     func keyboardViewDidTapNextKeyboard(_ keyboard: KeyboardView) {
-        advanceToNextInputMode()
+        if settings.emojiPanel {
+            showEmojiPanel()
+        } else {
+            advanceToNextInputMode()
+        }
     }
 
     func keyboardViewDidChangeMode(_ keyboard: KeyboardView) {
@@ -727,12 +802,13 @@ extension KeyboardViewController: SuggestionBarDelegate {
         } else {
             // Words and emoji replace what's being typed (Gboard); predictions and
             // emoji offered after a space are simply added.
-            deleteBackward(word.count)
+            deleteBackward(suggestion.replaceCount ?? word.count)
             insert(suggestion.text)
         }
-        insert(" ")
+        if suggestion.isPaste { recentCopy = nil }
+        if suggestion.addsSpace { insert(" ") }
         resetWordOffsets()
-        lastKeyWasSpace = true
+        lastKeyWasSpace = suggestion.addsSpace
         lastCorrection = nil
         afterInsert()
     }
@@ -780,12 +856,17 @@ extension KeyboardViewController: GifPanelDelegate, ClipboardPanelDelegate {
         case .backspace:
             if !query.isEmpty { query.removeLast() }
         case .submit:
+            if searchIsEmoji {
+                showEmojiPanel()
+                return true
+            }
             let trimmed = query.trimmingCharacters(in: .whitespaces)
             showGifPanel(query: trimmed.isEmpty ? nil : trimmed)
             return true
         }
         gifQuery = query
         gifSearchField?.setQuery(query)
+        if searchIsEmoji { updateEmojiResults(query) }
         if shiftState == .once { shiftState = .off }
         return true
     }
@@ -797,7 +878,14 @@ extension KeyboardViewController: GifPanelDelegate, ClipboardPanelDelegate {
             settings.theme = .custom
             updateAppearance()
         }
+        if ShortcutStore.receive(from: .general) {
+            scheduleSuggestions()
+        }
         let result = clipboard.capture()
+        if result.changed, let text = clipboard.items.first?.text {
+            recentCopy = (text, Date())
+            scheduleSuggestions()
+        }
         if let key = result.giphyKey {
             settings.giphyKey = key
             if gifPanel != nil { loadGifs(query: lastGifQuery) }
@@ -824,6 +912,15 @@ extension KeyboardViewController: GifPanelDelegate, ClipboardPanelDelegate {
     private func dismissPanels() {
         editPanel?.removeFromSuperview()
         editPanel = nil
+        emojiPanel?.removeFromSuperview()
+        emojiPanel = nil
+        emojiStrip?.removeFromSuperview()
+        emojiStrip = nil
+        if searchIsEmoji || barHeightConstraint?.constant != Metrics.barHeight {
+            searchIsEmoji = false
+            barHeightConstraint?.constant = Metrics.barHeight
+            updateHeight()
+        }
         gifPanel?.removeFromSuperview()
         gifPanel = nil
         clipboardPanel?.removeFromSuperview()
@@ -1084,5 +1181,98 @@ extension KeyboardViewController: EditPanelDelegate {
             length += ch.utf16.count
         }
         return length
+    }
+}
+
+// MARK: - Emoji panel
+
+extension KeyboardViewController: EmojiPanelDelegate {
+    private func showEmojiPanel() {
+        dismissPanels()
+        let panel = EmojiPanel(theme: keyboardView.theme)
+        panel.delegate = self
+        presentPanel(panel)
+        emojiPanel = panel
+    }
+
+    private func insertEmoji(_ emoji: String) {
+        resyncMirrorIfIdle()
+        lastCorrection = nil
+        lastKeyWasSpace = false
+        insert(emoji)
+        resetWordOffsets()
+        feedback.keyDown(.character, hasFullAccess: fullAccess)
+    }
+
+    func emojiPanelClose(_ panel: EmojiPanel) {
+        dismissPanels()
+    }
+
+    func emojiPanel(_ panel: EmojiPanel, didPick emoji: String) {
+        insertEmoji(emoji)
+    }
+
+    func emojiPanelBackspace(_ panel: EmojiPanel) {
+        (self as KeyboardViewDelegate).keyboardView(keyboardView, backspaceWholeWord: false)
+        feedback.keyDown(.backspace, hasFullAccess: fullAccess)
+    }
+
+    func emojiPanelNextKeyboard(_ panel: EmojiPanel) {
+        advanceToNextInputMode()
+    }
+
+    func emojiPanelBeginSearch(_ panel: EmojiPanel) {
+        startEmojiSearch()
+    }
+
+    /// Search box at the top, a row of matching emoji under it, and the keys to type with.
+    private func startEmojiSearch() {
+        emojiPanel?.removeFromSuperview()
+        emojiPanel = nil
+        let stripHeight: CGFloat = 44
+        barHeightConstraint?.constant = Metrics.barHeight + stripHeight
+        updateHeight()
+
+        let field = GifSearchField(isDark: isDark, placeholder: "Search emoji")
+        field.onCancel = { [weak self] in self?.showEmojiPanel() }
+        let strip = EmojiResultsStrip(theme: keyboardView.theme)
+        strip.onPick = { [weak self] emoji in
+            EmojiStore.shared.noteUsed(emoji)
+            self?.insertEmoji(emoji)
+        }
+        for view in [field, strip] as [UIView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            self.view.addSubview(view)
+        }
+        NSLayoutConstraint.activate([
+            field.topAnchor.constraint(equalTo: view.topAnchor),
+            field.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            field.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            field.heightAnchor.constraint(equalToConstant: Metrics.barHeight),
+            strip.topAnchor.constraint(equalTo: field.bottomAnchor),
+            strip.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            strip.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            strip.heightAnchor.constraint(equalToConstant: stripHeight),
+        ])
+        gifSearchField = field
+        emojiStrip = strip
+        searchIsEmoji = true
+        gifQuery = ""
+        updateEmojiResults("")
+        if keyboardView.mode != .letters { keyboardView.mode = .letters }
+        keyboardView.returnKeyType = .done
+        keyboardView.isHidden = false
+        suggestionBar.isHidden = true
+        shiftState = .off
+    }
+
+    private func updateEmojiResults(_ query: String) {
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty {
+            let recents = EmojiStore.shared.recents
+            emojiStrip?.setEmojis(recents, emptyMessage: recents.isEmpty ? "Type to search emoji" : nil)
+        } else {
+            emojiStrip?.setEmojis(EmojiStore.shared.search(trimmed), emptyMessage: "No emoji found")
+        }
     }
 }

@@ -43,6 +43,10 @@ final class KeyboardView: UIView {
     var mode: KeyboardMode = .letters {
         didSet { if oldValue != mode { rebuild(); delegate?.keyboardViewDidChangeMode(self) } }
     }
+    /// The text box's kind: changes the bottom row (web / email) or shows the number pad.
+    var field: FieldKind = .normal {
+        didSet { if oldValue != field { rebuild(); delegate?.keyboardViewDidChangeMode(self) } }
+    }
     var shiftState: ShiftState = .off {
         didSet {
             guard oldValue != shiftState else { return }
@@ -115,7 +119,7 @@ final class KeyboardView: UIView {
 
     /// Height of the keys area (not including the suggestion bar).
     var preferredHeight: CGFloat {
-        let count = CGFloat(Layout.rows(mode: mode, numberRow: settings.numberRow).count)
+        let count = CGFloat(Layout.rows(mode: mode, numberRow: settings.numberRow && mode == .letters, field: field).count)
         return Metrics.topInset + count * keyHeight + (count - 1) * rowGap + Metrics.bottomInset
     }
 
@@ -123,7 +127,7 @@ final class KeyboardView: UIView {
     func rebuild() {
         cancelAllTouches()
         rows.flatMap { $0 }.forEach { $0.removeFromSuperview() }
-        let layout = Layout.rows(mode: mode, numberRow: settings.numberRow && mode == .letters)
+        let layout = Layout.rows(mode: mode, numberRow: settings.numberRow && mode == .letters, field: field)
         rows = layout.map { row in row.keys.map { KeyView(def: $0) } }
         pinEndsRows = layout.map { $0.pinEnds }
         rows.flatMap { $0 }.forEach { addSubview($0) }
