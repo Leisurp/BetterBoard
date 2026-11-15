@@ -29,6 +29,47 @@ final class KeyboardViewController: UIInputViewController {
 
     private var proxy: UITextDocumentProxy { textDocumentProxy }
 
+    // MARK: Local text mirror
+    //
+    // The host app's copy of the text (documentContextBeforeInput) updates
+    // asynchronously and falls behind when typing fast. Reading it mid-burst made
+    // autocorrect delete the wrong number of characters, which looked like missed
+    // keys. So the keyboard keeps its own copy of the text before the cursor,
+    // updated on every edit it makes, and only re-reads the host's copy after a
+    // pause in typing (when it's guaranteed to be up to date).
+
+    private var mirror = ""
+    private var lastEditTime: CFTimeInterval = 0
+    private let mirrorLimit = 400
+    private let idleResyncDelay: CFTimeInterval = 0.6
+
+    private func resyncMirror() {
+        mirror = String((proxy.documentContextBeforeInput ?? "").suffix(mirrorLimit))
+    }
+
+    private func resyncMirrorIfIdle() {
+        if CACurrentMediaTime() - lastEditTime > idleResyncDelay {
+            resyncMirror()
+        }
+    }
+
+    private func insert(_ text: String) {
+        proxy.insertText(text)
+        mirror += text
+        if mirror.utf16.count > mirrorLimit * 2 {
+            mirror = String(mirror.suffix(mirrorLimit))
+        }
+        lastEditTime = CACurrentMediaTime()
+    }
+
+    private func deleteBackward(_ count: Int = 1) {
+        for _ in 0..<max(count, 0) {
+            proxy.deleteBackward()
+            if !mirror.isEmpty { mirror.removeLast() }
+        }
+        lastEditTime = CACurrentMediaTime()
+    }
+
     // MARK: Lifecycle
 
     override func viewDidLoad() {
@@ -75,6 +116,7 @@ final class KeyboardViewController: UIInputViewController {
         default:
             keyboardView.mode = .letters
         }
+        resyncMirror()
         updateForContext()
     }
 
@@ -87,7 +129,17 @@ final class KeyboardViewController: UIInputViewController {
 
     override func textDidChange(_ textInput: UITextInput?) {
         super.textDidChange(textInput)
+        // Mid-typing this fires for our own edits too, so only trust the host's
+        // text (cursor moved, app cleared the field…) once typing has paused.
+        resyncMirrorIfIdle()
         updateForContext()
+    }
+
+    override func selectionDidChange(_ textInput: UITextInput?) {
+        super.selectionDidChange(textInput)
+        resyncMirrorIfIdle()
+        updateAutoShift()
+        scheduleSuggestions()
     }
 
     private var totalHeight: CGFloat {
@@ -134,9 +186,8 @@ final class KeyboardViewController: UIInputViewController {
 
     /// Letters (and apostrophes) directly before the cursor.
     private func currentWord() -> String {
-        guard let before = proxy.documentContextBeforeInput else { return "" }
         var chars: [Character] = []
-        for ch in before.reversed() {
+        for ch in mirror.reversed() {
             if ch.isLetter || ch == "'" || ch == "\u{2019}" {
                 chars.append(ch)
             } else {
@@ -150,24 +201,16 @@ final class KeyboardViewController: UIInputViewController {
         return word
     }
 
-    private func deleteCharacters(_ count: Int) {
-        for _ in 0..<max(count, 0) {
-            proxy.deleteBackward()
-        }
-    }
-
-    /// Replaces the word before the cursor if it's misspelled. Returns true if it changed.
-    @discardableResult
-    private func applyAutocorrect(boundary: String) -> Bool {
-        guard fieldAllowsCorrection else { return false }
+    /// Replaces the word before the cursor if it's misspelled.
+    private func applyAutocorrect(boundary: String) {
+        guard fieldAllowsCorrection else { return }
         let word = currentWord()
         guard !word.isEmpty,
               let fixed = cachedCorrection(for: word),
-              fixed != word else { return false }
-        deleteCharacters(word.count)
-        proxy.insertText(fixed)
+              fixed != word else { return }
+        deleteBackward(word.count)
+        insert(fixed)
         lastCorrection = Correction(original: word, corrected: fixed, boundary: boundary)
-        return true
     }
 
     private func afterInsert() {
@@ -191,7 +234,7 @@ final class KeyboardViewController: UIInputViewController {
             return
         }
 
-        let before = proxy.documentContextBeforeInput ?? ""
+        let before = mirror
         let shouldCapitalise: Bool
         switch proxy.autocapitalizationType ?? .sentences {
         case .none:
@@ -209,7 +252,6 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func isSentenceStart(_ before: String) -> Bool {
-        if before.isEmpty { return true }
         guard let last = before.last else { return true }
         if last.isNewline { return true }
         guard last == " " else { return false }
@@ -220,8 +262,8 @@ final class KeyboardViewController: UIInputViewController {
 
     // MARK: Suggestions
 
-    /// Spell-checking is slow, so it never runs between keystrokes: the bar
-    /// updates once typing pauses briefly.
+    /// Spell-checking is slow, so it never runs while typing: the bar updates
+    /// once typing pauses.
     private func scheduleSuggestions() {
         suggestionTimer?.invalidate()
         suggestionTimer = nil
@@ -229,7 +271,7 @@ final class KeyboardViewController: UIInputViewController {
             suggestionBar.setSuggestions([])
             return
         }
-        suggestionTimer = Timer.scheduledTimer(timeInterval: 0.15,
+        suggestionTimer = Timer.scheduledTimer(timeInterval: 0.3,
                                                target: self,
                                                selector: #selector(suggestionTimerFired),
                                                userInfo: nil,
@@ -305,6 +347,7 @@ final class KeyboardViewController: UIInputViewController {
         suggestionBar.isHidden = false
         keyboardView.rebuild()
         updateHeight()
+        resyncMirror()
         updateForContext()
     }
 }
@@ -312,25 +355,27 @@ final class KeyboardViewController: UIInputViewController {
 // MARK: - Key handling
 
 extension KeyboardViewController: KeyboardViewDelegate {
-    func keyboardView(_ view: KeyboardView, didType text: String) {
+    func keyboardView(_ keyboard: KeyboardView, didType text: String) {
+        resyncMirrorIfIdle()
         lastKeyWasSpace = false
         lastCorrection = nil
         let breaksWord = [".", ",", "!", "?", ";", ":", ")", "\""].contains(text)
         if breaksWord {
             applyAutocorrect(boundary: text)
         }
-        proxy.insertText(text)
+        insert(text)
         afterInsert()
     }
 
-    func keyboardViewDidTapSpace(_ view: KeyboardView) {
+    func keyboardViewDidTapSpace(_ keyboard: KeyboardView) {
+        resyncMirrorIfIdle()
+
         // Double-space full stop.
-        if settings.doubleSpacePeriod, lastKeyWasSpace,
-           let before = proxy.documentContextBeforeInput, before.hasSuffix(" ") {
-            let previous = before.dropLast().last
+        if settings.doubleSpacePeriod, lastKeyWasSpace, mirror.hasSuffix(" ") {
+            let previous = mirror.dropLast().last
             if let previous, previous.isLetter || previous.isNumber {
-                proxy.deleteBackward()
-                proxy.insertText(". ")
+                deleteBackward()
+                insert(". ")
                 lastKeyWasSpace = false
                 lastCorrection = nil
                 afterInsert()
@@ -340,7 +385,7 @@ extension KeyboardViewController: KeyboardViewDelegate {
 
         lastCorrection = nil
         applyAutocorrect(boundary: " ")
-        proxy.insertText(" ")
+        insert(" ")
         lastKeyWasSpace = true
         if keyboardView.mode != .letters {
             keyboardView.mode = .letters
@@ -348,23 +393,24 @@ extension KeyboardViewController: KeyboardViewDelegate {
         afterInsert()
     }
 
-    func keyboardViewDidTapReturn(_ view: KeyboardView) {
+    func keyboardViewDidTapReturn(_ keyboard: KeyboardView) {
+        resyncMirrorIfIdle()
         lastKeyWasSpace = false
         lastCorrection = nil
         applyAutocorrect(boundary: "\n")
-        proxy.insertText("\n")
+        insert("\n")
         afterInsert()
     }
 
-    func keyboardView(_ view: KeyboardView, backspaceWholeWord: Bool) {
+    func keyboardView(_ keyboard: KeyboardView, backspaceWholeWord: Bool) {
+        resyncMirrorIfIdle()
         lastKeyWasSpace = false
 
         // Backspace straight after an autocorrection restores what you typed.
         if !backspaceWholeWord, let correction = lastCorrection,
-           let before = proxy.documentContextBeforeInput,
-           before.hasSuffix(correction.corrected + correction.boundary) {
-            deleteCharacters(correction.corrected.count + correction.boundary.count)
-            proxy.insertText(correction.original)
+           mirror.hasSuffix(correction.corrected + correction.boundary) {
+            deleteBackward(correction.corrected.count + correction.boundary.count)
+            insert(correction.original)
             autocorrector.learn(correction.original)
             lastCorrection = nil
             updateAutoShift()
@@ -373,10 +419,10 @@ extension KeyboardViewController: KeyboardViewDelegate {
         }
         lastCorrection = nil
 
-        if backspaceWholeWord, let before = proxy.documentContextBeforeInput, !before.isEmpty {
+        if backspaceWholeWord, !mirror.isEmpty {
             var count = 0
             var sawWordChar = false
-            for ch in before.reversed() {
+            for ch in mirror.reversed() {
                 if ch.isWhitespace || ch.isPunctuation {
                     if sawWordChar { break }
                 } else {
@@ -384,15 +430,15 @@ extension KeyboardViewController: KeyboardViewDelegate {
                 }
                 count += 1
             }
-            deleteCharacters(max(count, 1))
+            deleteBackward(max(count, 1))
         } else {
-            proxy.deleteBackward()
+            deleteBackward()
         }
         updateAutoShift()
         scheduleSuggestions()
     }
 
-    func keyboardViewShiftDown(_ view: KeyboardView) {
+    func keyboardViewShiftDown(_ keyboard: KeyboardView) {
         shiftHeldDown = true
         typedWhileShiftHeld = false
         let now = Date()
@@ -405,7 +451,7 @@ extension KeyboardViewController: KeyboardViewDelegate {
         shiftState = (shiftState == .off) ? .once : .off
     }
 
-    func keyboardViewShiftUp(_ view: KeyboardView) {
+    func keyboardViewShiftUp(_ keyboard: KeyboardView) {
         shiftHeldDown = false
         if typedWhileShiftHeld && shiftState != .locked {
             shiftState = .off
@@ -413,11 +459,11 @@ extension KeyboardViewController: KeyboardViewDelegate {
         typedWhileShiftHeld = false
     }
 
-    func keyboardViewDidTapNextKeyboard(_ view: KeyboardView) {
+    func keyboardViewDidTapNextKeyboard(_ keyboard: KeyboardView) {
         advanceToNextInputMode()
     }
 
-    func keyboardViewDidChangeMode(_ view: KeyboardView) {
+    func keyboardViewDidChangeMode(_ keyboard: KeyboardView) {
         updateHeight()
         updateAutoShift()
     }
@@ -427,14 +473,15 @@ extension KeyboardViewController: KeyboardViewDelegate {
 
 extension KeyboardViewController: SuggestionBarDelegate {
     func suggestionBar(_ bar: SuggestionBar, didPick suggestion: Suggestion) {
+        resyncMirrorIfIdle()
         let word = currentWord()
         if suggestion.isTypedWord {
             autocorrector.learn(word)
         } else {
-            deleteCharacters(word.count)
-            proxy.insertText(suggestion.text)
+            deleteBackward(word.count)
+            insert(suggestion.text)
         }
-        proxy.insertText(" ")
+        insert(" ")
         lastKeyWasSpace = true
         lastCorrection = nil
         afterInsert()

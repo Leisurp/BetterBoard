@@ -42,6 +42,7 @@ final class KeyboardView: UIView {
 
     private final class TouchState {
         var key: KeyView
+        var startPoint: CGPoint = .zero
         var held = false
         var holdTimer: Timer?
         var repeatTimer: Timer?
@@ -199,6 +200,7 @@ final class KeyboardView: UIView {
             // Fast typing: a new finger finishes any key that's still down.
             commitPendingTouches()
             let state = TouchState(key: key)
+            state.startPoint = touch.location(in: self)
             touchStates[touch] = state
             keyDown(state)
         }
@@ -206,10 +208,14 @@ final class KeyboardView: UIView {
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
+            let point = touch.location(in: self)
+            // Fast typing rolls the finger a little as it lifts. Only treat it as a
+            // deliberate slide to another key once it has moved well away.
             guard let state = touchStates[touch],
                   state.key.def.action == .character,
                   !state.held,
-                  let newKey = key(at: touch.location(in: self)),
+                  hypot(point.x - state.startPoint.x, point.y - state.startPoint.y) > state.key.bounds.width * 0.75,
+                  let newKey = key(at: point),
                   newKey !== state.key,
                   newKey.def.action == .character else { continue }
             // Slide to a neighbouring key before the hold kicks in.
