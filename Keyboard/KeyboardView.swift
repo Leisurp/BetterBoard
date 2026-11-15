@@ -20,7 +20,10 @@ final class KeyboardView: UIView {
         didSet { if oldValue != mode { rebuild(); delegate?.keyboardViewDidChangeMode(self) } }
     }
     var shiftState: ShiftState = .off {
-        didSet { if oldValue != shiftState { refreshKeys() } }
+        didSet {
+            guard oldValue != shiftState else { return }
+            for row in rows { for key in row { key.updateShift(shiftState) } }
+        }
     }
     var returnKeyType: UIReturnKeyType = .default {
         didSet { if oldValue != returnKeyType { refreshKeys() } }
@@ -190,7 +193,8 @@ final class KeyboardView: UIView {
     // MARK: Touches
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        for touch in touches {
+        // Two fingers can land in the same event; handle them in the order they landed.
+        for touch in touches.sorted(by: { $0.timestamp < $1.timestamp }) {
             guard let key = key(at: touch.location(in: self)) else { continue }
             // Fast typing: a new finger finishes any key that's still down.
             commitPendingTouches()
@@ -217,16 +221,19 @@ final class KeyboardView: UIView {
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        for touch in touches {
+        for touch in touches.sorted(by: { $0.timestamp < $1.timestamp }) {
             guard let state = touchStates.removeValue(forKey: touch) else { continue }
             keyUp(state, commit: true)
         }
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
-        for touch in touches {
+        // iOS sometimes cancels fast taps (system gestures near the screen edges).
+        // Still type letters and spaces so they don't go missing.
+        for touch in touches.sorted(by: { $0.timestamp < $1.timestamp }) {
             guard let state = touchStates.removeValue(forKey: touch) else { continue }
-            keyUp(state, commit: false)
+            let action = state.key.def.action
+            keyUp(state, commit: action == .character || action == .space)
         }
     }
 

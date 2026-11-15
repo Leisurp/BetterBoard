@@ -45,9 +45,12 @@ final class KeyPopupView: UIView {
         neck.addLine(to: CGPoint(x: keyFrame.minX, y: keyFrame.minY + radius))
         neck.close()
 
-        let bulbPath = UIBezierPath(roundedRect: bulb, cornerRadius: radius + 2).cgPath
-        let keyPath = UIBezierPath(roundedRect: keyFrame, cornerRadius: radius).cgPath
-        let combined = bulbPath.union(neck.cgPath).union(keyPath)
+        // All three shapes wind the same way, so filling them together draws their union
+        // (much cheaper than boolean path operations on every key press).
+        let path = UIBezierPath(roundedRect: bulb, cornerRadius: radius + 2)
+        path.append(neck)
+        path.append(UIBezierPath(roundedRect: keyFrame, cornerRadius: radius))
+        let combined = path.cgPath
 
         let box = combined.boundingBoxOfPath
         frame = box

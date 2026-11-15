@@ -24,6 +24,8 @@ final class KeyboardViewController: UIInputViewController {
         let boundary: String
     }
     private var lastCorrection: Correction?
+    private var lastCorrectionCheck: (word: String, fix: String?)?
+    private var suggestionTimer: Timer?
 
     private var proxy: UITextDocumentProxy { textDocumentProxy }
 
@@ -100,13 +102,14 @@ final class KeyboardViewController: UIInputViewController {
         keyboardView.returnKeyType = proxy.returnKeyType ?? .default
         updateAppearance()
         updateAutoShift()
-        refreshSuggestions()
+        scheduleSuggestions()
     }
 
     private func updateAppearance() {
         let appearance = proxy.keyboardAppearance ?? .default
         let isDark = appearance == .dark
             || (appearance != .light && traitCollection.userInterfaceStyle == .dark)
+        guard isDark != keyboardView.theme.isDark || isDark != suggestionBar.theme.isDark else { return }
         let theme = Theme(isDark: isDark)
         keyboardView.theme = theme
         suggestionBar.theme = theme
@@ -159,7 +162,7 @@ final class KeyboardViewController: UIInputViewController {
         guard fieldAllowsCorrection else { return false }
         let word = currentWord()
         guard !word.isEmpty,
-              let fixed = autocorrector.correction(for: word),
+              let fixed = cachedCorrection(for: word),
               fixed != word else { return false }
         deleteCharacters(word.count)
         proxy.insertText(fixed)
@@ -176,7 +179,7 @@ final class KeyboardViewController: UIInputViewController {
             }
         }
         updateAutoShift()
-        refreshSuggestions()
+        scheduleSuggestions()
     }
 
     // MARK: Shift / auto-capitalisation
@@ -217,6 +220,37 @@ final class KeyboardViewController: UIInputViewController {
 
     // MARK: Suggestions
 
+    /// Spell-checking is slow, so it never runs between keystrokes: the bar
+    /// updates once typing pauses briefly.
+    private func scheduleSuggestions() {
+        suggestionTimer?.invalidate()
+        suggestionTimer = nil
+        if !fieldAllowsCorrection || currentWord().isEmpty {
+            suggestionBar.setSuggestions([])
+            return
+        }
+        suggestionTimer = Timer.scheduledTimer(timeInterval: 0.15,
+                                               target: self,
+                                               selector: #selector(suggestionTimerFired),
+                                               userInfo: nil,
+                                               repeats: false)
+    }
+
+    @objc private func suggestionTimerFired() {
+        suggestionTimer = nil
+        refreshSuggestions()
+    }
+
+    /// Autocorrection for `word`, remembered so the spell checker runs once per word.
+    private func cachedCorrection(for word: String) -> String? {
+        if let cached = lastCorrectionCheck, cached.word == word {
+            return cached.fix
+        }
+        let fix = autocorrector.correction(for: word)
+        lastCorrectionCheck = (word, fix)
+        return fix
+    }
+
     private func refreshSuggestions() {
         guard fieldAllowsCorrection else {
             suggestionBar.setSuggestions([])
@@ -229,7 +263,7 @@ final class KeyboardViewController: UIInputViewController {
         }
 
         var list: [Suggestion] = [Suggestion(text: word, isTypedWord: true)]
-        if let fix = autocorrector.correction(for: word), fix != word {
+        if let fix = cachedCorrection(for: word), fix != word {
             list.append(Suggestion(text: fix, isAutocorrect: true))
         }
         var extras = autocorrector.completions(for: word)
@@ -334,7 +368,7 @@ extension KeyboardViewController: KeyboardViewDelegate {
             autocorrector.learn(correction.original)
             lastCorrection = nil
             updateAutoShift()
-            refreshSuggestions()
+            scheduleSuggestions()
             return
         }
         lastCorrection = nil
@@ -355,7 +389,7 @@ extension KeyboardViewController: KeyboardViewDelegate {
             proxy.deleteBackward()
         }
         updateAutoShift()
-        refreshSuggestions()
+        scheduleSuggestions()
     }
 
     func keyboardViewShiftDown(_ view: KeyboardView) {

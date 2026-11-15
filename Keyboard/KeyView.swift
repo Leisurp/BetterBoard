@@ -16,6 +16,8 @@ final class KeyView: UIView {
     private var theme = Theme(isDark: false)
     private var isAccent = false
     private var isShiftActive = false
+    private var iconConfig = UIImage.SymbolConfiguration(pointSize: Metrics.iconPointSize, weight: .regular)
+    private var shiftIconName = ""
 
     init(def: KeyDef) {
         self.def = def
@@ -52,7 +54,7 @@ final class KeyView: UIView {
         isAccent = false
         isShiftActive = false
 
-        let iconConfig = UIImage.SymbolConfiguration(pointSize: Metrics.iconPointSize * fontScale, weight: .regular)
+        iconConfig = UIImage.SymbolConfiguration(pointSize: Metrics.iconPointSize * fontScale, weight: .regular)
 
         switch def.action {
         case .character:
@@ -65,14 +67,7 @@ final class KeyView: UIView {
             }
 
         case .shift:
-            let name: String
-            switch shift {
-            case .off: name = "shift"
-            case .once: name = "shift.fill"
-            case .locked: name = "capslock.fill"
-            }
-            isShiftActive = shift != .off
-            iconView.image = UIImage(systemName: name, withConfiguration: iconConfig)
+            applyShiftIcon(shift)
 
         case .backspace:
             iconView.image = UIImage(systemName: "delete.left", withConfiguration: iconConfig)
@@ -96,6 +91,38 @@ final class KeyView: UIView {
 
         updateColors()
         setNeedsLayout()
+    }
+
+    /// Fast path for shift changes: only touches letter labels and the shift icon.
+    func updateShift(_ shift: ShiftState) {
+        switch def.action {
+        case .character:
+            guard def.isLetter else { return }
+            let newOutput = shift != .off ? def.text.uppercased() : def.text
+            if newOutput != output {
+                output = newOutput
+                label.text = newOutput
+            }
+        case .shift:
+            applyShiftIcon(shift)
+            updateColors()
+        default:
+            break
+        }
+    }
+
+    private func applyShiftIcon(_ shift: ShiftState) {
+        let name: String
+        switch shift {
+        case .off: name = "shift"
+        case .once: name = "shift.fill"
+        case .locked: name = "capslock.fill"
+        }
+        isShiftActive = shift != .off
+        if name != shiftIconName || iconView.image == nil {
+            shiftIconName = name
+            iconView.image = UIImage(systemName: name, withConfiguration: iconConfig)
+        }
     }
 
     override func layoutSubviews() {
