@@ -1,22 +1,50 @@
 import UIKit
 
-/// Spelling correction and word completion using Apple's built-in spell checker.
+/// Gboard-style autocorrect: decides what (if anything) to replace the current word
+/// with, and what to show in the suggestion bar.
+///
+/// - `WordModel` ranks words by touch position + word frequency (the Gboard part).
+/// - Apple's spell checker (`UITextChecker`, Australian English) decides which words
+///   are valid and fixes spelling to the Australian form ("color" → "colour").
+/// - Your contacts / text replacements and words you've taught it are never corrected.
 final class Autocorrector {
+    struct Analysis {
+        let word: String
+        /// What to replace the word with when space/punctuation is typed (nil = leave it).
+        let correction: String?
+        /// Suggestion bar: [left, middle, right].
+        let suggestions: [Suggestion?]
+    }
+
+    let model = WordModel()
     private let checker = UITextChecker()
     let language: String
 
-    private var learned: Set<String>
-    private var lexiconWords: Set<String> = []
-    /// Text replacements from iOS Settings (e.g. "omw" -> "On my way!").
+    /// Lowercased word → how you typed it.
+    private var learned: [String: String]
+    private var lexiconWords: [String: String] = [:]
+    /// Text replacements from iOS Settings (e.g. "omw" → "On my way!").
     private var replacements: [String: String] = [:]
+    private var pendingWords: [String: Int] = [:]
+    private var checkerCache: [String: Bool] = [:]
+
     private let learnedKey = "learnedWords"
+    private let learnedLogFreq: Float = 10
+    private let lexiconLogFreq: Float = 9
 
     init() {
         let available = UITextChecker.availableLanguages
         language = ["en_AU", "en_GB", "en"].first(where: { available.contains($0) })
             ?? available.first(where: { $0.hasPrefix("en") })
             ?? "en_GB"
-        learned = Set(UserDefaults.standard.stringArray(forKey: learnedKey) ?? [])
+        let stored = UserDefaults.standard.stringArray(forKey: learnedKey) ?? []
+        learned = Dictionary(stored.map { ($0.lowercased(), $0) }, uniquingKeysWith: { a, _ in a })
+        model.load { [weak self] in self?.addUserWordsToModel() }
+    }
+
+    private func addUserWordsToModel() {
+        for word in learned.values { model.addUserWord(word, logFreq: learnedLogFreq) }
+        for word in lexiconWords.values { model.addUserWord(word, logFreq: lexiconLogFreq) }
     }
 
     func loadLexicon(from controller: UIInputViewController) {
@@ -27,7 +55,8 @@ final class Autocorrector {
                 for (input, text) in entries {
                     let key = input.lowercased()
                     if key == text.lowercased() {
-                        self.lexiconWords.insert(key)
+                        self.lexiconWords[key] = text
+                        self.model.addUserWord(text, logFreq: self.lexiconLogFreq)
                     } else {
                         self.replacements[key] = text
                     }
@@ -36,99 +65,257 @@ final class Autocorrector {
         }
     }
 
-    // MARK: Queries
+    // MARK: Analysis
 
-    func isKnown(_ word: String) -> Bool {
+    /// - Parameters:
+    ///   - offsets: where each letter of the word was touched, relative to the centre
+    ///     of the key that was hit, in key-pitch units (zeros if unknown).
+    ///   - autoApply: whether the "Auto-correction" setting is on.
+    func analyze(word: String, offsets: [CGPoint], autoApply: Bool) -> Analysis {
+        let typed = Suggestion(text: word, isTypedWord: true)
         let lower = word.lowercased()
-        if learned.contains(lower) || lexiconWords.contains(lower) { return true }
-        let range = NSRange(location: 0, length: (word as NSString).length)
-        let miss = checker.rangeOfMisspelledWord(in: word, range: range, startingAt: 0, wrap: false, language: language)
-        return miss.location == NSNotFound
-    }
 
-    /// The word to auto-replace `word` with when a space/punctuation is typed, if any.
-    func correction(for word: String) -> String? {
-        if let replacement = replacements[word.lowercased()] { return replacement }
-        if word == "i" { return "I" }
-        guard word.count >= 2, !isKnown(word) else { return nil }
-
-        // Leave acronyms and mixed-case words (iPhone, NASA) alone.
-        let rest = word.dropFirst()
-        if rest.contains(where: { $0.isUppercase }) { return nil }
-
-        let capitalised = word.first?.isUppercase ?? false
-        let maxDistance = (word.count <= 3 || capitalised) ? 1 : 2
-        return guesses(for: word, maxDistance: maxDistance).first
-    }
-
-    /// Spelling guesses, closest first.
-    func guesses(for word: String, maxDistance: Int = 2) -> [String] {
-        let range = NSRange(location: 0, length: (word as NSString).length)
-        let raw = checker.guesses(forWordRange: range, in: word, language: language) ?? []
-        let lower = word.lowercased()
-        let scored = raw.enumerated().compactMap { index, guess -> (String, Int, Int)? in
-            let distance = Self.distance(lower, guess.lowercased())
-            guard distance <= maxDistance else { return nil }
-            return (guess, distance, index)
+        if let replacement = replacements[lower] {
+            return Analysis(word: word,
+                            correction: autoApply ? replacement : nil,
+                            suggestions: [typed, Suggestion(text: replacement, isAutocorrect: autoApply), nil])
         }
-        return scored
-            .sorted { ($0.1, $0.2) < ($1.1, $1.2) }
-            .map { matchCase($0.0, to: word) }
-    }
 
-    func completions(for word: String) -> [String] {
-        let range = NSRange(location: 0, length: (word as NSString).length)
-        let raw = checker.completions(forPartialWordRange: range, in: word, language: language) ?? []
-        return raw.prefix(6).map { matchCase($0, to: word) }
+        guard model.isReady, let letters = Self.encode(word), !letters.isEmpty,
+              letters.count <= WordModel.maxLength else {
+            return Analysis(word: word, correction: nil, suggestions: [nil, typed, nil])
+        }
+
+        let input = makeInput(letters: letters, offsets: offsets)
+        let n = letters.count
+        let isAllCaps = word.count > 1 && word == word.uppercased()
+        let hasInnerCaps = word.dropFirst().contains { $0.isUppercase } && !isAllCaps
+        let leaveAlone = isAllCaps || hasInnerCaps
+
+        // What did they type?
+        let exact = model.exactMatches(input)
+        let listed = exact.first { !$0.display.contains("'") }
+        let knownLocally = learned[lower] != nil || lexiconWords[lower] != nil
+            || checkerKnows(word) || checkerKnows(lower)
+        let ownTouchCost = touchCost(offsets: offsets, count: n)
+        let typedScore = ownTouchCost - (listed?.logFreq ?? (knownLocally ? 4 : 0))
+
+        // Spellings that are always fixed: "i" → "I", "dont" → "don't", "color" → "colour".
+        var forced: String?
+        if lower == "i" {
+            forced = "I"
+        } else if let contraction = exact.first(where: { $0.display.contains("'") && !$0.suggestOnly }) {
+            forced = contraction.display
+        } else if !knownLocally, listed != nil, let local = localSpelling(of: lower) {
+            forced = local
+        }
+
+        // Ranked alternatives (touch + frequency), in Australian spelling.
+        struct Alternative {
+            let text: String
+            let score: Float
+            let cost: Float
+            /// Only offered in the bar, never applied automatically.
+            let barOnly: Bool
+        }
+        var alternatives: [Alternative] = []
+        var seen: Set<String> = [lower]
+        func consider(_ c: WordModel.Candidate, penalty: Float, barOnly: Bool) {
+            guard !c.blocked, let text = localForm(c) else { return }
+            let key = text.lowercased()
+            guard !seen.contains(key) else { return }
+            seen.insert(key)
+            alternatives.append(Alternative(text: matchCase(text, to: word),
+                                            score: c.score + penalty,
+                                            cost: c.cost,
+                                            barOnly: barOnly || c.suggestOnly))
+        }
+        // Same letters, different word ("its" → "it's") comes first.
+        for c in exact where c.display.lowercased() != lower { consider(c, penalty: -100, barOnly: true) }
+        for c in model.decode(input, limit: 6) { consider(c, penalty: 0, barOnly: false) }
+        // Completions rank below similar-scoring corrections and are never auto-applied.
+        for c in model.completions(input, limit: 4) { consider(c, penalty: 2.5, barOnly: true) }
+        alternatives.sort { $0.score < $1.score }
+
+        // Decide whether to autocorrect.
+        var correction: String?
+        if autoApply && !leaveAlone {
+            if let forced {
+                correction = matchCase(forced, to: word)
+            } else {
+                let margin: Float = knownLocally ? 5 : (listed != nil ? 3 : 1)
+                let maxCost = min(3 + Float(n), 9)
+                if let best = alternatives.first(where: { !$0.barOnly }),
+                   best.cost <= maxCost,
+                   best.score < typedScore - margin {
+                    correction = best.text
+                }
+            }
+        }
+
+        // Suggestion bar, Gboard style.
+        var others = alternatives.map { $0.text }.filter { $0 != correction }
+        func next() -> Suggestion? {
+            others.isEmpty ? nil : Suggestion(text: others.removeFirst())
+        }
+        let suggestions: [Suggestion?]
+        if let correction {
+            suggestions = [typed, Suggestion(text: correction, isAutocorrect: true), next()]
+        } else if knownLocally || listed != nil {
+            suggestions = [next(), typed, next()]
+        } else {
+            suggestions = [typed, next(), next()]
+        }
+        return Analysis(word: word, correction: correction, suggestions: suggestions)
     }
 
     // MARK: Learning
 
+    /// Called when a word is finished without being corrected. Words you type twice
+    /// that the dictionary doesn't know get learned (Gboard does the same).
+    func noteCommitted(_ word: String) {
+        let lower = word.lowercased()
+        guard word.count >= 2, Self.encode(word) != nil, learned[lower] == nil else { return }
+        if checkerKnows(word) || checkerKnows(lower) { return }
+        if model.isReady, let letters = Self.encode(word),
+           model.exactMatches(makeInput(letters: letters, offsets: [])).contains(where: { !$0.display.contains("'") }) {
+            return
+        }
+        pendingWords[lower, default: 0] += 1
+        if pendingWords[lower, default: 0] >= 2 {
+            learn(word)
+        }
+    }
+
     func learn(_ word: String) {
         let lower = word.lowercased()
-        guard !lower.isEmpty else { return }
-        learned.insert(lower)
+        guard !lower.isEmpty, Self.encode(word) != nil else { return }
+        learned[lower] = word
+        pendingWords[lower] = nil
+        model.addUserWord(word, logFreq: learnedLogFreq)
         save()
     }
 
     func resetLearned() {
         learned.removeAll()
+        pendingWords.removeAll()
+        model.removeAllUserWords()
+        for word in lexiconWords.values { model.addUserWord(word, logFreq: lexiconLogFreq) }
         save()
     }
 
     private func save() {
-        UserDefaults.standard.set(Array(learned), forKey: learnedKey)
+        UserDefaults.standard.set(Array(learned.values), forKey: learnedKey)
     }
 
     // MARK: Helpers
 
-    private func matchCase(_ guess: String, to word: String) -> String {
-        if word.count > 1, word == word.uppercased(), word != word.lowercased() {
-            return guess.uppercased()
-        }
-        if let first = word.first, first.isUppercase {
-            return guess.prefix(1).uppercased() + guess.dropFirst()
-        }
-        return guess
-    }
-
-    /// Edit distance where swapping two neighbouring letters counts as one edit.
-    static func distance(_ a: String, _ b: String) -> Int {
-        let a = Array(a), b = Array(b)
-        if a.isEmpty { return b.count }
-        if b.isEmpty { return a.count }
-        var d = Array(repeating: Array(repeating: 0, count: b.count + 1), count: a.count + 1)
-        for i in 0...a.count { d[i][0] = i }
-        for j in 0...b.count { d[0][j] = j }
-        for i in 1...a.count {
-            for j in 1...b.count {
-                let cost = a[i - 1] == b[j - 1] ? 0 : 1
-                d[i][j] = min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost)
-                if i > 1, j > 1, a[i - 1] == b[j - 2], a[i - 2] == b[j - 1] {
-                    d[i][j] = min(d[i][j], d[i - 2][j - 2] + 1)
-                }
+    /// Letter indices (a = 0 … z = 25), skipping apostrophes. Nil for anything else
+    /// (accents, digits), which the model doesn't handle.
+    static func encode(_ word: String) -> [UInt8]? {
+        var result: [UInt8] = []
+        for scalar in word.lowercased().unicodeScalars {
+            let v = scalar.value
+            if v >= 97 && v <= 122 {
+                result.append(UInt8(v - 97))
+            } else if scalar == "'" || scalar == "\u{2019}" {
+                continue
+            } else {
+                return nil
             }
         }
-        return d[a.count][b.count]
+        return result
+    }
+
+    private func makeInput(letters: [UInt8], offsets: [CGPoint]) -> WordModel.Input {
+        let n = letters.count
+        var x = [Float](repeating: 0, count: n)
+        var y = [Float](repeating: 0, count: n)
+        let usable = offsets.suffix(n)
+        let pad = n - usable.count
+        for (i, letter) in letters.enumerated() {
+            x[i] = WordModel.keyX[Int(letter)]
+            y[i] = WordModel.keyY[Int(letter)]
+            if i >= pad {
+                let offset = usable[usable.startIndex + (i - pad)]
+                x[i] += Float(offset.x)
+                y[i] += Float(offset.y)
+            }
+        }
+        return WordModel.Input(letters: letters, x: x, y: y)
+    }
+
+    /// How far the touches were from the centres of the keys that were hit.
+    private func touchCost(offsets: [CGPoint], count: Int) -> Float {
+        offsets.suffix(count).reduce(0) { total, o in
+            total + min(2 * Float(o.x * o.x + o.y * o.y), 7)
+        }
+    }
+
+    private func checkerKnows(_ word: String) -> Bool {
+        if let cached = checkerCache[word] { return cached }
+        let range = NSRange(location: 0, length: (word as NSString).length)
+        let miss = checker.rangeOfMisspelledWord(in: word, range: range, startingAt: 0, wrap: false, language: language)
+        let known = miss.location == NSNotFound
+        if checkerCache.count > 4000 { checkerCache.removeAll() }
+        checkerCache[word] = known
+        return known
+    }
+
+    /// A dictionary word in its correct Australian form and capitalisation.
+    private func localForm(_ c: WordModel.Candidate) -> String? {
+        let word = c.display
+        if c.isUserWord || word.contains("'") || word == "I" { return word }
+        if checkerKnows(word) { return word }
+        let capitalised = word.prefix(1).uppercased() + word.dropFirst()
+        if checkerKnows(capitalised) { return capitalised }
+        if let local = localSpelling(of: word) { return local }
+        // Slang and informal words ("gonna", "lol") that Apple's dictionary lacks.
+        return word
+    }
+
+    /// US → Australian spelling ("color" → "colour", "organize" → "organise").
+    private func localSpelling(of word: String) -> String? {
+        guard !checkerKnows(word) else { return nil }
+        for variant in Self.spellingVariants(of: word) where checkerKnows(variant) {
+            return variant
+        }
+        return nil
+    }
+
+    private static let suffixRules: [(String, String)] = [
+        ("ization", "isation"), ("izations", "isations"), ("ize", "ise"), ("izes", "ises"),
+        ("ized", "ised"), ("izing", "ising"), ("izer", "iser"), ("yze", "yse"), ("yzed", "ysed"),
+        ("yzing", "ysing"), ("eled", "elled"), ("eling", "elling"), ("eler", "eller"),
+        ("er", "re"), ("ers", "res"), ("og", "ogue"), ("ogs", "ogues"),
+        ("ense", "ence"), ("ment", "ement"),
+    ]
+
+    static func spellingVariants(of word: String) -> [String] {
+        var variants: [String] = []
+        for (us, uk) in suffixRules where word.hasSuffix(us) {
+            variants.append(String(word.dropLast(us.count)) + uk)
+        }
+        // color → colour, favorite → favourite, behavior → behaviour
+        var search = word.startIndex
+        while let range = word.range(of: "or", range: search..<word.endIndex) {
+            if range.lowerBound > word.startIndex {
+                variants.append(word.replacingCharacters(in: range, with: "our"))
+            }
+            search = range.upperBound
+        }
+        if word == "gray" { variants.append("grey") }
+        if word == "mom" { variants.append("mum") }
+        return variants
+    }
+
+    private func matchCase(_ text: String, to word: String) -> String {
+        if word.count > 1, word == word.uppercased(), word != word.lowercased() {
+            return text.uppercased()
+        }
+        if let first = word.first, first.isUppercase {
+            return text.prefix(1).uppercased() + text.dropFirst()
+        }
+        return text
     }
 }

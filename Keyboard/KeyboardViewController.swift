@@ -24,8 +24,6 @@ final class KeyboardViewController: UIInputViewController {
         let boundary: String
     }
     private var lastCorrection: Correction?
-    private var lastCorrectionCheck: (word: String, fix: String?)?
-    private var suggestionTimer: Timer?
 
     private var proxy: UITextDocumentProxy { textDocumentProxy }
 
@@ -44,7 +42,11 @@ final class KeyboardViewController: UIInputViewController {
     private let idleResyncDelay: CFTimeInterval = 0.6
 
     private func resyncMirror() {
-        mirror = String((proxy.documentContextBeforeInput ?? "").suffix(mirrorLimit))
+        let fresh = String((proxy.documentContextBeforeInput ?? "").suffix(mirrorLimit))
+        if fresh != mirror {
+            mirror = fresh
+            wordOffsets.removeAll() // cursor moved or text changed: touch history no longer applies
+        }
     }
 
     private func resyncMirrorIfIdle() {
@@ -202,8 +204,13 @@ final class KeyboardViewController: UIInputViewController {
 
     // MARK: Field rules
 
+    /// Whether words typed here should be corrected automatically.
+    private var autoApplyCorrections: Bool {
+        settings.autocorrect && fieldAllowsCorrection
+    }
+
+    /// Whether this field gets suggestions at all (not for web addresses, emails, numbers…).
     private var fieldAllowsCorrection: Bool {
-        guard settings.autocorrect else { return false }
         if proxy.autocorrectionType == .no { return false }
         switch proxy.keyboardType ?? .default {
         case .URL, .emailAddress, .webSearch, .twitter, .numberPad, .decimalPad,
@@ -233,16 +240,28 @@ final class KeyboardViewController: UIInputViewController {
         return word
     }
 
-    /// Replaces the word before the cursor if it's misspelled.
+    /// Replaces the word before the cursor if autocorrect has a better word.
     private func applyAutocorrect(boundary: String) {
-        guard fieldAllowsCorrection else { return }
         let word = currentWord()
-        guard !word.isEmpty,
-              let fixed = cachedCorrection(for: word),
-              fixed != word else { return }
+        guard !word.isEmpty, fieldAllowsCorrection else { return }
+        guard let fixed = analysis()?.correction, fixed != word else {
+            autocorrector.noteCommitted(word)
+            return
+        }
         deleteBackward(word.count)
         insert(fixed)
         lastCorrection = Correction(original: word, corrected: fixed, boundary: boundary)
+    }
+
+    // MARK: Touch positions for the current word
+    //
+    // Where each letter was touched (relative to the key's centre) lets autocorrect
+    // tell "tapped the edge of e, probably meant w" from "tapped dead centre of e".
+
+    private var wordOffsets: [CGPoint] = []
+
+    private func resetWordOffsets() {
+        wordOffsets.removeAll()
     }
 
     private func afterInsert() {
@@ -306,62 +325,37 @@ final class KeyboardViewController: UIInputViewController {
 
     // MARK: Suggestions
 
-    /// Spell-checking is slow, so it never runs while typing: the bar updates
-    /// once typing pauses.
+    private var cachedAnalysis: (word: String, touches: Int, autoApply: Bool, result: Autocorrector.Analysis)?
+    private var suggestionsPending = false
+
+    /// Autocorrect's verdict on the current word (cached until the word changes).
+    private func analysis() -> Autocorrector.Analysis? {
+        let word = currentWord()
+        guard !word.isEmpty, fieldAllowsCorrection else { return nil }
+        let autoApply = autoApplyCorrections
+        if let cached = cachedAnalysis, cached.word == word,
+           cached.touches == wordOffsets.count, cached.autoApply == autoApply {
+            return cached.result
+        }
+        let result = autocorrector.analyze(word: word, offsets: wordOffsets, autoApply: autoApply)
+        cachedAnalysis = (word, wordOffsets.count, autoApply, result)
+        return result
+    }
+
+    /// Updates the bar live, like Gboard. Several quick keystrokes queued up
+    /// together only cost one update.
     private func scheduleSuggestions() {
-        suggestionTimer?.invalidate()
-        suggestionTimer = nil
-        if !fieldAllowsCorrection || currentWord().isEmpty {
-            suggestionBar.setSuggestions([])
-            return
+        guard !suggestionsPending else { return }
+        suggestionsPending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.suggestionsPending = false
+            self.refreshSuggestions()
         }
-        suggestionTimer = Timer.scheduledTimer(timeInterval: 0.3,
-                                               target: self,
-                                               selector: #selector(suggestionTimerFired),
-                                               userInfo: nil,
-                                               repeats: false)
-    }
-
-    @objc private func suggestionTimerFired() {
-        suggestionTimer = nil
-        refreshSuggestions()
-    }
-
-    /// Autocorrection for `word`, remembered so the spell checker runs once per word.
-    private func cachedCorrection(for word: String) -> String? {
-        if let cached = lastCorrectionCheck, cached.word == word {
-            return cached.fix
-        }
-        let fix = autocorrector.correction(for: word)
-        lastCorrectionCheck = (word, fix)
-        return fix
     }
 
     private func refreshSuggestions() {
-        guard fieldAllowsCorrection else {
-            suggestionBar.setSuggestions([])
-            return
-        }
-        let word = currentWord()
-        guard !word.isEmpty else {
-            suggestionBar.setSuggestions([])
-            return
-        }
-
-        var list: [Suggestion] = [Suggestion(text: word, isTypedWord: true)]
-        if let fix = cachedCorrection(for: word), fix != word {
-            list.append(Suggestion(text: fix, isAutocorrect: true))
-        }
-        var extras = autocorrector.completions(for: word)
-        if list.count == 2 {
-            extras = autocorrector.guesses(for: word) + extras
-        }
-        for candidate in extras where list.count < 3 {
-            if candidate != word, !list.contains(where: { $0.text == candidate }) {
-                list.append(Suggestion(text: candidate))
-            }
-        }
-        suggestionBar.setSuggestions(list)
+        suggestionBar.setSuggestions(analysis()?.suggestions ?? [])
     }
 
     // MARK: Settings panel
@@ -399,15 +393,26 @@ final class KeyboardViewController: UIInputViewController {
 // MARK: - Key handling
 
 extension KeyboardViewController: KeyboardViewDelegate {
-    func keyboardView(_ keyboard: KeyboardView, didType text: String) {
+    func keyboardView(_ keyboard: KeyboardView, didType text: String, touchOffset: CGPoint?) {
         resyncMirrorIfIdle()
         lastKeyWasSpace = false
         lastCorrection = nil
-        let breaksWord = [".", ",", "!", "?", ";", ":", ")", "\""].contains(text)
-        if breaksWord {
-            applyAutocorrect(boundary: text)
+        let isLetter = text.count == 1 && (text.first?.isLetter ?? false)
+        let isApostrophe = text == "'" || text == "\u{2019}"
+        if isLetter {
+            if currentWord().isEmpty { resetWordOffsets() }
+            insert(text)
+            wordOffsets.append(touchOffset ?? .zero)
+        } else if isApostrophe {
+            insert(text)
+        } else {
+            let breaksWord = [".", ",", "!", "?", ";", ":", ")", "\""].contains(text)
+            if breaksWord {
+                applyAutocorrect(boundary: text)
+            }
+            insert(text)
+            resetWordOffsets()
         }
-        insert(text)
         afterInsert()
     }
 
@@ -430,6 +435,7 @@ extension KeyboardViewController: KeyboardViewDelegate {
         lastCorrection = nil
         applyAutocorrect(boundary: " ")
         insert(" ")
+        resetWordOffsets()
         lastKeyWasSpace = true
         if keyboardView.mode != .letters {
             keyboardView.mode = .letters
@@ -443,6 +449,7 @@ extension KeyboardViewController: KeyboardViewDelegate {
         lastCorrection = nil
         applyAutocorrect(boundary: "\n")
         insert("\n")
+        resetWordOffsets()
         afterInsert()
     }
 
@@ -455,6 +462,8 @@ extension KeyboardViewController: KeyboardViewDelegate {
            mirror.hasSuffix(correction.corrected + correction.boundary) {
             deleteBackward(correction.corrected.count + correction.boundary.count)
             insert(correction.original)
+            resetWordOffsets()
+            // Gboard-style: undoing a correction teaches the keyboard your word.
             autocorrector.learn(correction.original)
             lastCorrection = nil
             updateAutoShift()
@@ -475,7 +484,11 @@ extension KeyboardViewController: KeyboardViewDelegate {
                 count += 1
             }
             deleteBackward(max(count, 1))
+            resetWordOffsets()
         } else {
+            if mirror.last?.isLetter == true, !wordOffsets.isEmpty {
+                wordOffsets.removeLast()
+            }
             deleteBackward()
         }
         updateAutoShift()
@@ -526,6 +539,7 @@ extension KeyboardViewController: SuggestionBarDelegate {
             insert(suggestion.text)
         }
         insert(" ")
+        resetWordOffsets()
         lastKeyWasSpace = true
         lastCorrection = nil
         afterInsert()

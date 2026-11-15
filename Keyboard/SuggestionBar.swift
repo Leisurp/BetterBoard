@@ -28,7 +28,7 @@ final class SuggestionBar: UIView {
     private let gearButton = UIButton(type: .system)
     private var slots: [UIButton] = []
     private var separators: [UIView] = []
-    private var suggestions: [Suggestion] = []
+    private var suggestions: [Suggestion?] = []
     private let gearWidth: CGFloat = 44
 
     override init(frame: CGRect) {
@@ -60,13 +60,16 @@ final class SuggestionBar: UIView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func setSuggestions(_ list: [Suggestion]) {
-        suggestions = Array(list.prefix(3))
+    /// Three fixed slots: left, middle, right (Gboard style). The middle one is the
+    /// main suggestion; it's bold when it will be applied by pressing space.
+    func setSuggestions(_ list: [Suggestion?]) {
+        var padded = Array(list.prefix(3))
+        while padded.count < 3 { padded.append(nil) }
+        guard padded != suggestions else { return }
+        suggestions = padded
         for (index, button) in slots.enumerated() {
-            if index < suggestions.count {
-                let s = suggestions[index]
-                let title = s.isTypedWord ? "\u{201C}\(s.text)\u{201D}" : s.text
-                button.setTitle(title, for: .normal)
+            if let s = padded[index] {
+                button.setTitle(s.text, for: .normal)
                 button.titleLabel?.font = .systemFont(ofSize: 17, weight: s.isAutocorrect ? .semibold : .regular)
                 button.isHidden = false
             } else {
@@ -75,7 +78,7 @@ final class SuggestionBar: UIView {
             }
         }
         for (index, line) in separators.enumerated() {
-            line.isHidden = !(index + 1 < suggestions.count)
+            line.isHidden = padded[index] == nil || padded[index + 1] == nil
         }
     }
 
@@ -117,7 +120,7 @@ final class SuggestionBar: UIView {
     }
 
     @objc private func slotTapped(_ sender: UIButton) {
-        guard sender.tag < suggestions.count else { return }
-        delegate?.suggestionBar(self, didPick: suggestions[sender.tag])
+        guard sender.tag < suggestions.count, let suggestion = suggestions[sender.tag] else { return }
+        delegate?.suggestionBar(self, didPick: suggestion)
     }
 }

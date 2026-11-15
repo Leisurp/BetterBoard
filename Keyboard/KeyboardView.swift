@@ -1,7 +1,9 @@
 import UIKit
 
 protocol KeyboardViewDelegate: AnyObject {
-    func keyboardView(_ view: KeyboardView, didType text: String)
+    /// `touchOffset`: for letters, where the key was touched relative to its centre,
+    /// in key-pitch units (0,0 = dead centre; 0.5 = halfway to the next key).
+    func keyboardView(_ view: KeyboardView, didType text: String, touchOffset: CGPoint?)
     func keyboardViewDidTapSpace(_ view: KeyboardView)
     func keyboardViewDidTapReturn(_ view: KeyboardView)
     func keyboardView(_ view: KeyboardView, backspaceWholeWord: Bool)
@@ -43,6 +45,8 @@ final class KeyboardView: UIView {
     private final class TouchState {
         var key: KeyView
         var startPoint: CGPoint = .zero
+        /// Where the finger was when the current key was chosen (for autocorrect).
+        var touchPoint: CGPoint = .zero
         var held = false
         var holdTimer: Timer?
         var repeatTimer: Timer?
@@ -202,6 +206,7 @@ final class KeyboardView: UIView {
             commitPendingTouches()
             let state = TouchState(key: key)
             state.startPoint = touch.location(in: self)
+            state.touchPoint = state.startPoint
             touchStates[touch] = state
             keyDown(state)
         }
@@ -223,6 +228,7 @@ final class KeyboardView: UIView {
             state.stopTimers()
             state.key.isPressed = false
             state.key = newKey
+            state.touchPoint = point
             keyDown(state)
         }
     }
@@ -320,7 +326,14 @@ final class KeyboardView: UIView {
         switch key.def.action {
         case .character:
             let text = state.held ? (key.def.hint ?? key.output) : key.output
-            delegate?.keyboardView(self, didType: text)
+            var offset: CGPoint?
+            if !state.held, key.def.isLetter {
+                let pitchX = key.frame.width + Metrics.keyGap
+                let pitchY = keyHeight + rowGap
+                offset = CGPoint(x: (state.touchPoint.x - key.frame.midX) / pitchX,
+                                 y: (state.touchPoint.y - key.frame.midY) / pitchY)
+            }
+            delegate?.keyboardView(self, didType: text, touchOffset: offset)
         case .space:
             delegate?.keyboardViewDidTapSpace(self)
         case .returnKey:
