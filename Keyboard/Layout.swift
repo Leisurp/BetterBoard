@@ -136,9 +136,9 @@ enum Layout {
             default: corner = .special(.mode(.letters), "ABC", width: .flex)
             }
             return [
-                KeyRow(keys: "123".map { .flexChar(String($0)) }),
-                KeyRow(keys: "456".map { .flexChar(String($0)) }),
-                KeyRow(keys: "789".map { .flexChar(String($0)) }),
+                KeyRow(keys: "123".map { KeyDef.flexChar(String($0)) }),
+                KeyRow(keys: "456".map { KeyDef.flexChar(String($0)) }),
+                KeyRow(keys: "789".map { KeyDef.flexChar(String($0)) }),
                 KeyRow(keys: [corner, .flexChar("0"), .special(.backspace, width: .flex)]),
             ]
 

@@ -10,6 +10,8 @@ final class KeyboardViewController: UIInputViewController {
     private let keyboardView = KeyboardView()
     private var settingsPanel: SettingsPanel?
     private var editPanel: EditPanel?
+    /// Words removed by the current backspace swipe, newest last, so they can be put back.
+    private var swipeDeleted: [String] = []
     private var emojiPanel: EmojiPanel?
     private var emojiStrip: EmojiResultsStrip?
     /// The search box is searching emoji (not GIFs).
@@ -731,8 +733,6 @@ extension KeyboardViewController: KeyboardViewDelegate {
         scheduleSuggestions()
     }
 
-    /// Words removed by the current backspace swipe, newest last, so they can be put back.
-    private var swipeDeleted: [String] = []
 
     func keyboardView(_ keyboard: KeyboardView, deleteSwipeWords words: Int) {
         guard gifQuery == nil else { return }
