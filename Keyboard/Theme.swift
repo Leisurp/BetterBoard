@@ -3,6 +3,8 @@ import UIKit
 /// The keyboard themes you can pick in settings.
 enum ThemeStyle: Int, CaseIterable {
     case system = 0, light, dark, black, ocean, forest, sunset, lavender, rose, mint
+    /// Made in the BetterBoard app (your photo / colours).
+    case custom = 100
 
     var title: String {
         switch self {
@@ -16,6 +18,7 @@ enum ThemeStyle: Int, CaseIterable {
         case .lavender: return "Lavender"
         case .rose: return "Rose"
         case .mint: return "Mint"
+        case .custom: return "Custom"
         }
     }
 }
@@ -47,6 +50,12 @@ struct Theme {
     /// Active (shifted) shift key.
     let shiftActiveColor: UIColor
     let shiftActiveIconColor: UIColor
+    /// Outline around keys (custom themes).
+    let keyBorderColor: UIColor?
+    /// Photo behind the keys (custom themes).
+    let backgroundImage: UIImage?
+    /// Which version of the custom theme this was made from.
+    let customVersion: Int
 
     /// Apple's colours (also used before settings are read).
     init(isDark: Bool) {
@@ -57,6 +66,9 @@ struct Theme {
         self.style = style
         self.keyBorders = keyBorders
         let blue = rgb(0x3478F6)
+        var border: UIColor?
+        var image: UIImage?
+        customVersion = style == .custom ? CustomThemeStore.version : 0
 
         // (background, key, pressed, label, accent, dark?)
         let palette: (bg: UIColor?, key: UIColor, pressed: UIColor, label: UIColor, accent: UIColor, dark: Bool)
@@ -83,7 +95,22 @@ struct Theme {
             palette = (rgb(0xF6D9E1), .white, rgb(0xEBB8C6), rgb(0x4A1F2B), rgb(0xE0457B), false)
         case .mint:
             palette = (rgb(0xD3F0E3), .white, rgb(0xA8DCC5), rgb(0x143D2C), rgb(0x1E9E8A), false)
+        case .custom:
+            if let custom = CustomThemeStore.data {
+                let label = CustomThemeStore.color(custom.label)
+                palette = (CustomThemeStore.color(custom.background), CustomThemeStore.color(custom.key),
+                           label.withAlphaComponent(0.3), label, blue, CustomThemeStore.isLight(label))
+                border = custom.border.map(CustomThemeStore.color)
+                image = custom.hasImage ? CustomThemeStore.image : nil
+            } else {
+                // Not made yet: look like the default theme.
+                palette = systemIsDark
+                    ? (nil, UIColor(white: 0.285, alpha: 1), UIColor(white: 0.42, alpha: 1), .white, blue, true)
+                    : (nil, .white, UIColor(white: 0.80, alpha: 1), .black, blue, false)
+            }
         }
+        keyBorderColor = keyBorders ? border : nil
+        backgroundImage = image
 
         isDark = palette.dark
         background = palette.bg
@@ -92,9 +119,14 @@ struct Theme {
         labelColor = palette.label
         hintColor = palette.label.withAlphaComponent(palette.dark ? 0.62 : 0.55)
         accentColor = palette.accent
-        popupColor = palette.dark ? palette.pressed : palette.key
+        if style == .custom {
+            // Custom keys may be see-through; the pop-up must stay solid.
+            popupColor = palette.dark ? UIColor(white: 0.3, alpha: 1) : .white
+        } else {
+            popupColor = palette.dark ? palette.pressed : palette.key
+        }
         separatorColor = palette.label.withAlphaComponent(palette.dark ? 0.18 : 0.15)
-        keyShadowColor = (palette.dark || !keyBorders) ? .clear : UIColor(white: 0, alpha: 0.28)
+        keyShadowColor = (palette.dark || !keyBorders || style == .custom) ? .clear : UIColor(white: 0, alpha: 0.28)
         shiftActiveColor = keyBorders ? .white : palette.label.withAlphaComponent(0.25)
         shiftActiveIconColor = keyBorders ? .black : palette.label
     }
@@ -102,6 +134,7 @@ struct Theme {
     /// Two themes look the same.
     func matches(_ other: Theme) -> Bool {
         style == other.style && isDark == other.isDark && keyBorders == other.keyBorders
+            && customVersion == other.customVersion
     }
 }
 

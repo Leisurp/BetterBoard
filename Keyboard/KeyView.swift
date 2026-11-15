@@ -159,6 +159,12 @@ final class KeyView: UIView {
             iconView.tintColor = theme.labelColor
         }
         layer.shadowColor = theme.keyShadowColor.cgColor
+        if let border = theme.keyBorderColor {
+            layer.borderWidth = 1
+            layer.borderColor = border.cgColor
+        } else {
+            layer.borderWidth = 0
+        }
     }
 
     private static func returnStyle(_ type: UIReturnKeyType) -> (icon: String, accent: Bool) {

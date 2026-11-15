@@ -13,12 +13,14 @@ struct BetterBoardApp: App {
 enum SetupRoute: Hashable {
     case gifs
     case clipboard
+    case theme
 
     init?(url: URL) {
         guard url.scheme == "betterboard" else { return nil }
         switch url.lastPathComponent {
         case "gifs": self = .gifs
         case "clipboard": self = .clipboard
+        case "theme": self = .theme
         default: return nil
         }
     }
@@ -47,6 +49,9 @@ struct ContentView: View {
                     NavigationLink(value: SetupRoute.clipboard) {
                         Label("Clipboard history", systemImage: "list.clipboard")
                     }
+                    NavigationLink(value: SetupRoute.theme) {
+                        Label("Custom theme", systemImage: "paintpalette")
+                    }
                 }
 
                 Section("Try it") {
@@ -67,6 +72,7 @@ struct ContentView: View {
                 switch route {
                 case .gifs: GifSetupView()
                 case .clipboard: ClipboardSetupView()
+                case .theme: ThemeEditorView()
                 }
             }
         }

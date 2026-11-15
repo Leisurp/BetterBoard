@@ -4,6 +4,8 @@ import UIKit
 final class SettingsPanel: UIView {
     var onDone: (() -> Void)?
     var onResetLearned: (() -> Void)?
+    /// Opens the theme editor in the BetterBoard app.
+    var onOpenThemeEditor: (() -> Void)?
 
     private let settings = KeyboardSettings.shared
     private let scrollView = UIScrollView()
@@ -80,6 +82,9 @@ final class SettingsPanel: UIView {
         addSection("THEME")
         addThemePicker()
         addToggle("Key borders", \.keyBorders)
+        addLinkButton("Make your own theme (photo, key colours) in the BetterBoard app \u{203A}") { [weak self] in
+            self?.onOpenThemeEditor?()
+        }
 
         addSection("TYPING")
         addToggle("Auto-correction", \.autocorrect)
@@ -178,6 +183,17 @@ final class SettingsPanel: UIView {
         stack.addArrangedSubview(row("Keyboard height", picker))
     }
 
+    private func addLinkButton(_ title: String, action: @escaping () -> Void) {
+        let button = UIButton(type: .system)
+        button.setTitle(title, for: .normal)
+        button.titleLabel?.font = .systemFont(ofSize: 15)
+        button.titleLabel?.numberOfLines = 0
+        button.contentHorizontalAlignment = .leading
+        button.addAction(UIAction { _ in action() }, for: .touchUpInside)
+        button.heightAnchor.constraint(greaterThanOrEqualToConstant: 40).isActive = true
+        stack.addArrangedSubview(button)
+    }
+
     private func addNote(_ text: String) {
         let label = UILabel()
         label.text = text
@@ -221,7 +237,28 @@ final class SettingsPanel: UIView {
         button.clipsToBounds = true
         button.widthAnchor.constraint(equalToConstant: 58).isActive = true
         button.heightAnchor.constraint(equalToConstant: 46).isActive = true
-        if style == .system {
+        let customMissing = style == .custom && CustomThemeStore.data == nil
+        if style == .custom {
+            if let image = CustomThemeStore.image {
+                let photo = UIImageView(image: image)
+                photo.contentMode = .scaleAspectFill
+                photo.frame = CGRect(x: 0, y: 0, width: 58, height: 46)
+                photo.isUserInteractionEnabled = false
+                button.addSubview(photo)
+            }
+            if customMissing {
+                button.backgroundColor = UIColor.secondarySystemFill
+                let plus = UIImageView(image: UIImage(systemName: "plus"))
+                plus.tintColor = .label
+                plus.contentMode = .center
+                plus.frame = CGRect(x: 0, y: 0, width: 58, height: 46)
+                plus.isUserInteractionEnabled = false
+                button.addSubview(plus)
+            } else {
+                button.backgroundColor = preview.background
+                addMiniKeys(to: button, colors: [preview.keyColor, preview.keyColor], border: preview.keyBorderColor)
+            }
+        } else if style == .system {
             // Half light, half dark: follows your phone.
             let light = Theme(style: .system, systemIsDark: false, keyBorders: true)
             let dark = Theme(style: .system, systemIsDark: true, keyBorders: true)
@@ -236,6 +273,10 @@ final class SettingsPanel: UIView {
             addMiniKeys(to: button, colors: [preview.keyColor, preview.keyColor])
         }
         button.addAction(UIAction { [weak self] _ in
+            if customMissing {
+                self?.onOpenThemeEditor?()
+                return
+            }
             self?.settings.theme = style
             self?.highlightTheme()
         }, for: .touchUpInside)
@@ -255,11 +296,15 @@ final class SettingsPanel: UIView {
     }
 
     /// Three little keys on the swatch.
-    private func addMiniKeys(to button: UIButton, colors: [UIColor]) {
+    private func addMiniKeys(to button: UIButton, colors: [UIColor], border: UIColor? = nil) {
         for index in 0..<3 {
             let key = UIView(frame: CGRect(x: 7 + CGFloat(index) * 15, y: 16, width: 13, height: 14))
             key.backgroundColor = index < 2 ? colors[0] : colors[1]
             key.layer.cornerRadius = 3
+            if let border {
+                key.layer.borderWidth = 1
+                key.layer.borderColor = border.cgColor
+            }
             key.isUserInteractionEnabled = false
             button.addSubview(key)
         }

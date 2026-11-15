@@ -137,6 +137,11 @@ final class EditPanel: UIView {
         button.layer.shadowOffset = CGSize(width: 0, height: 1)
         button.layer.shadowRadius = 0
         button.layer.shadowOpacity = 1
+        if let border = theme.keyBorderColor {
+            button.layer.borderWidth = 1
+            button.layer.borderColor = border.cgColor
+            button.layer.cornerRadius = Metrics.cornerRadius
+        }
         let pressed = theme.keyPressedColor
         let normal = config.background.backgroundColor
         button.configurationUpdateHandler = { button in

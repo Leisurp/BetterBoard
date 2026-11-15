@@ -10,6 +10,8 @@ final class KeyboardViewController: UIInputViewController {
     private let keyboardView = KeyboardView()
     private var settingsPanel: SettingsPanel?
     private var editPanel: EditPanel?
+    /// Photo behind the keys (custom theme).
+    private let backgroundImageView = UIImageView()
     private let feedback = KeyFeedback()
     /// Cached: reading hasFullAccess on every key press isn't free.
     private var fullAccess = false
@@ -105,6 +107,19 @@ final class KeyboardViewController: UIInputViewController {
             self.feedback.tick(hasFullAccess: self.fullAccess)
         }
         fullAccess = hasFullAccess
+
+        backgroundImageView.contentMode = .scaleAspectFill
+        backgroundImageView.clipsToBounds = true
+        backgroundImageView.isUserInteractionEnabled = false
+        backgroundImageView.isHidden = true
+        backgroundImageView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(backgroundImageView)
+        NSLayoutConstraint.activate([
+            backgroundImageView.topAnchor.constraint(equalTo: view.topAnchor),
+            backgroundImageView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            backgroundImageView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            backgroundImageView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
 
         suggestionBar.translatesAutoresizingMaskIntoConstraints = false
         keyboardView.translatesAutoresizingMaskIntoConstraints = false
@@ -242,7 +257,16 @@ final class KeyboardViewController: UIInputViewController {
         keyboardView.theme = theme
         suggestionBar.theme = theme
         view.backgroundColor = theme.background
+        backgroundImageView.image = theme.backgroundImage
+        updateBackgroundImageVisibility()
         settingsPanel?.overrideUserInterfaceStyle = theme.isDark ? .dark : .light
+    }
+
+    /// The photo shows behind the keys and the edit panel, but not behind panels
+    /// full of text (settings, GIFs, clipboard), where it would be hard to read.
+    private func updateBackgroundImageVisibility() {
+        let busyPanel = settingsPanel != nil || gifPanel != nil || clipboardPanel != nil
+        backgroundImageView.isHidden = backgroundImageView.image == nil || busyPanel
     }
 
     // MARK: Field rules
@@ -443,6 +467,7 @@ final class KeyboardViewController: UIInputViewController {
         let panel = SettingsPanel(isDark: keyboardView.theme.isDark, hasFullAccess: hasFullAccess)
         panel.onDone = { [weak self] in self?.hideSettings() }
         panel.onResetLearned = { [weak self] in self?.autocorrector.resetLearned() }
+        panel.onOpenThemeEditor = { [weak self] in self?.openApp("betterboard://setup/theme") }
         panel.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(panel)
         NSLayoutConstraint.activate([
@@ -454,11 +479,13 @@ final class KeyboardViewController: UIInputViewController {
         settingsPanel = panel
         keyboardView.isHidden = true
         suggestionBar.isHidden = true
+        updateBackgroundImageVisibility()
     }
 
     private func hideSettings() {
         settingsPanel?.removeFromSuperview()
         settingsPanel = nil
+        updateBackgroundImageVisibility()
         keyboardView.isHidden = false
         suggestionBar.isHidden = false
         keyboardView.rebuild()
@@ -765,6 +792,11 @@ extension KeyboardViewController: GifPanelDelegate, ClipboardPanelDelegate {
 
     @objc private func checkClipboard() {
         guard hasFullAccess else { return }
+        // A custom theme sent from the BetterBoard app.
+        if CustomThemeStore.receive(from: .general) {
+            settings.theme = .custom
+            updateAppearance()
+        }
         let result = clipboard.capture()
         if let key = result.giphyKey {
             settings.giphyKey = key
@@ -784,6 +816,8 @@ extension KeyboardViewController: GifPanelDelegate, ClipboardPanelDelegate {
         ])
         keyboardView.isHidden = true
         suggestionBar.isHidden = true
+        // Panels are stored after this call, so check on the next turn of the run loop.
+        DispatchQueue.main.async { [weak self] in self?.updateBackgroundImageVisibility() }
     }
 
     /// Back to the normal keyboard.
@@ -800,6 +834,7 @@ extension KeyboardViewController: GifPanelDelegate, ClipboardPanelDelegate {
         keyboardView.returnKeyType = proxy.returnKeyType ?? .default
         keyboardView.isHidden = false
         suggestionBar.isHidden = false
+        updateBackgroundImageVisibility()
         updateAutoShift()
         scheduleSuggestions()
     }
