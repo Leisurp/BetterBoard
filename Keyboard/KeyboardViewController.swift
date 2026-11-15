@@ -9,6 +9,10 @@ final class KeyboardViewController: UIInputViewController {
     private let suggestionBar = SuggestionBar()
     private let keyboardView = KeyboardView()
     private var settingsPanel: SettingsPanel?
+    private var editPanel: EditPanel?
+    private let feedback = KeyFeedback()
+    /// Cached: reading hasFullAccess on every key press isn't free.
+    private var fullAccess = false
 
     // GIFs and clipboard history (need Full Access).
     private let clipboard = ClipboardStore()
@@ -92,6 +96,15 @@ final class KeyboardViewController: UIInputViewController {
         suggestionBar.delegate = self
         suggestionBar.touchForwardTarget = keyboardView
         keyboardView.delegate = self
+        keyboardView.onKeyDown = { [weak self] action in
+            guard let self else { return }
+            self.feedback.keyDown(action, hasFullAccess: self.fullAccess)
+        }
+        keyboardView.onCursorStep = { [weak self] in
+            guard let self else { return }
+            self.feedback.tick(hasFullAccess: self.fullAccess)
+        }
+        fullAccess = hasFullAccess
 
         suggestionBar.translatesAutoresizingMaskIntoConstraints = false
         keyboardView.translatesAutoresizingMaskIntoConstraints = false
@@ -164,6 +177,8 @@ final class KeyboardViewController: UIInputViewController {
         super.viewDidAppear(animated)
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         relaxSystemGestures()
+        fullAccess = hasFullAccess
+        feedback.prepare(hasFullAccess: fullAccess)
         // Some recognisers are attached after the keyboard appears.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             self?.relaxSystemGestures()
@@ -220,13 +235,14 @@ final class KeyboardViewController: UIInputViewController {
 
     private func updateAppearance() {
         let appearance = proxy.keyboardAppearance ?? .default
-        let isDark = appearance == .dark
+        let systemDark = appearance == .dark
             || (appearance != .light && traitCollection.userInterfaceStyle == .dark)
-        guard isDark != keyboardView.theme.isDark || isDark != suggestionBar.theme.isDark else { return }
-        let theme = Theme(isDark: isDark)
+        let theme = Theme(style: settings.theme, systemIsDark: systemDark, keyBorders: settings.keyBorders)
+        guard !theme.matches(keyboardView.theme) || !theme.matches(suggestionBar.theme) else { return }
         keyboardView.theme = theme
         suggestionBar.theme = theme
-        settingsPanel?.overrideUserInterfaceStyle = isDark ? .dark : .light
+        view.backgroundColor = theme.background
+        settingsPanel?.overrideUserInterfaceStyle = theme.isDark ? .dark : .light
     }
 
     // MARK: Field rules
@@ -424,7 +440,7 @@ final class KeyboardViewController: UIInputViewController {
     private func showSettings() {
         guard settingsPanel == nil else { return }
         dismissPanels()
-        let panel = SettingsPanel(isDark: keyboardView.theme.isDark)
+        let panel = SettingsPanel(isDark: keyboardView.theme.isDark, hasFullAccess: hasFullAccess)
         panel.onDone = { [weak self] in self?.hideSettings() }
         panel.onResetLearned = { [weak self] in self?.autocorrector.resetLearned() }
         panel.translatesAutoresizingMaskIntoConstraints = false
@@ -460,8 +476,18 @@ extension KeyboardViewController: KeyboardViewDelegate {
         resyncMirrorIfIdle()
         lastKeyWasSpace = false
         lastCorrection = nil
+        var text = text
         let isLetter = text.count == 1 && (text.first?.isLetter ?? false)
         let isApostrophe = text == "'" || text == "\u{2019}"
+        // Auto-space after punctuation: "Hi.how" becomes "Hi. How".
+        if isLetter, settings.autoSpace, fieldAllowsCorrection, let last = mirror.last,
+           [".", ",", "!", "?", ":", ";"].contains(last),
+           let beforeLast = mirror.dropLast().last, beforeLast.isLetter || beforeLast == ")" {
+            insert(" ")
+            if settings.autocap, [".", "!", "?"].contains(last), shiftState != .locked {
+                text = text.uppercased()
+            }
+        }
         if isLetter {
             if currentWord().isEmpty { resetWordOffsets() }
             insert(text)
@@ -573,8 +599,12 @@ extension KeyboardViewController: KeyboardViewDelegate {
         lastKeyWasSpace = false
         lastCorrection = nil
         resetWordOffsets()
-        // The host moves the cursor in UTF-16 units, so step over a whole
-        // character (emoji, accented letters) at a time.
+        moveCursor(by: offset)
+    }
+
+    /// Moves the cursor by whole characters. The host counts in UTF-16 units, so
+    /// step over each character (emoji, accented letters) as one.
+    private func moveCursor(by offset: Int) {
         for _ in 0..<abs(offset) {
             if offset < 0 {
                 guard let ch = (proxy.documentContextBeforeInput ?? "").last else { break }
@@ -585,6 +615,13 @@ extension KeyboardViewController: KeyboardViewDelegate {
             }
         }
         // The text before the cursor is different now: re-read it once things settle.
+        lastEditTime = 0
+    }
+
+    /// Moves the cursor by a UTF-16 count worked out from the host's text.
+    private func moveCursor(utf16 offset: Int) {
+        guard offset != 0 else { return }
+        proxy.adjustTextPosition(byCharacterOffset: offset)
         lastEditTime = 0
     }
 
@@ -684,6 +721,16 @@ extension KeyboardViewController: SuggestionBarDelegate {
     func suggestionBarDidTapClipboard(_ bar: SuggestionBar) {
         showClipboardPanel()
     }
+
+    func suggestionBarDidTapEdit(_ bar: SuggestionBar) {
+        showEditPanel()
+    }
+
+    func suggestionBar(_ bar: SuggestionBar, didRemove suggestion: Suggestion) {
+        autocorrector.remove(suggestion.text)
+        cachedAnalysis = nil
+        refreshSuggestions()
+    }
 }
 
 // MARK: - GIFs & clipboard
@@ -741,6 +788,8 @@ extension KeyboardViewController: GifPanelDelegate, ClipboardPanelDelegate {
 
     /// Back to the normal keyboard.
     private func dismissPanels() {
+        editPanel?.removeFromSuperview()
+        editPanel = nil
         gifPanel?.removeFromSuperview()
         gifPanel = nil
         clipboardPanel?.removeFromSuperview()
@@ -910,5 +959,95 @@ extension KeyboardViewController: GifPanelDelegate, ClipboardPanelDelegate {
         lastCorrection = nil
         lastKeyWasSpace = false
         dismissPanels()
+    }
+}
+
+// MARK: - Text editing panel
+
+extension KeyboardViewController: EditPanelDelegate {
+    private func showEditPanel() {
+        dismissPanels()
+        let panel = EditPanel(theme: keyboardView.theme)
+        panel.delegate = self
+        presentPanel(panel)
+        editPanel = panel
+    }
+
+    func editPanelClose(_ panel: EditPanel) {
+        dismissPanels()
+    }
+
+    func editPanel(_ panel: EditPanel, perform action: EditAction) {
+        lastCorrection = nil
+        lastKeyWasSpace = false
+        resetWordOffsets()
+        let before = proxy.documentContextBeforeInput ?? ""
+        let after = proxy.documentContextAfterInput ?? ""
+        switch action {
+        case .left:
+            moveCursor(by: -1)
+        case .right:
+            moveCursor(by: 1)
+        case .wordLeft:
+            moveCursor(utf16: -Self.wordSpan(before.reversed()))
+        case .wordRight:
+            moveCursor(utf16: Self.wordSpan(Array(after)))
+        case .lineStart:
+            let line = before.split(separator: "\n", omittingEmptySubsequences: false).last ?? ""
+            moveCursor(utf16: -line.utf16.count)
+        case .lineEnd:
+            let line = after.split(separator: "\n", omittingEmptySubsequences: false).first ?? ""
+            moveCursor(utf16: line.utf16.count)
+        case .copy, .cut:
+            guard fullAccess else {
+                panel.flash("Copy and paste need Full Access turned on.")
+                return
+            }
+            guard let selected = proxy.selectedText, !selected.isEmpty else {
+                panel.flash("Nothing selected. Double-tap a word in the app to select it.")
+                return
+            }
+            UIPasteboard.general.string = selected
+            if action == .cut {
+                proxy.deleteBackward() // deletes the selection
+                lastEditTime = 0
+                panel.flash("Cut")
+            } else {
+                panel.flash("Copied")
+            }
+        case .paste:
+            guard fullAccess else {
+                panel.flash("Copy and paste need Full Access turned on.")
+                return
+            }
+            guard let text = UIPasteboard.general.string, !text.isEmpty else {
+                panel.flash("There's no text on the clipboard.")
+                return
+            }
+            insert(text)
+            lastEditTime = 0
+        case .delete:
+            (self as KeyboardViewDelegate).keyboardView(keyboardView, backspaceWholeWord: false)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            self?.resyncMirror()
+            self?.updateAutoShift()
+        }
+    }
+
+    /// UTF-16 length of the spaces and then the word next to the cursor, going outwards.
+    private static func wordSpan<S: Sequence>(_ characters: S) -> Int where S.Element == Character {
+        var length = 0
+        var sawWord = false
+        for ch in characters {
+            let isWordChar = ch.isLetter || ch.isNumber || ch == "'" || ch == "\u{2019}"
+            if isWordChar {
+                sawWord = true
+            } else if sawWord {
+                break
+            }
+            length += ch.utf16.count
+        }
+        return length
     }
 }

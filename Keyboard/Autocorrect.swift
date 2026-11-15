@@ -30,6 +30,9 @@ final class Autocorrector {
     private var checkerCache: [String: Bool] = [:]
 
     private let learnedKey = "learnedWords"
+    /// Words (and emoji) you've told the keyboard to stop suggesting, lowercased.
+    private var removed: Set<String>
+    private let removedKey = "removedWords"
     private let learnedLogFreq: Float = 10
     private let lexiconLogFreq: Float = 9
 
@@ -40,6 +43,7 @@ final class Autocorrector {
             ?? "en_GB"
         let stored = UserDefaults.standard.stringArray(forKey: learnedKey) ?? []
         learned = Dictionary(stored.map { ($0.lowercased(), $0) }, uniquingKeysWith: { a, _ in a })
+        removed = Set(UserDefaults.standard.stringArray(forKey: removedKey) ?? [])
         model.load { [weak self] in self?.addUserWordsToModel() }
         predictor.load()
     }
@@ -50,7 +54,7 @@ final class Autocorrector {
     /// like Gboard) and an emoji for the previous word on the right.
     func predictions(previous: String?, capitalise: Bool, showEmoji: Bool) -> [Suggestion?] {
         var words = predictor.predictions(after: previous, limit: 6)
-            .filter { !Lexicon.blocked.contains($0.lowercased()) }
+            .filter { !Lexicon.blocked.contains($0.lowercased()) && !removed.contains($0.lowercased()) }
         if capitalise {
             words = words.map { $0.prefix(1).uppercased() + $0.dropFirst() }
         }
@@ -60,7 +64,7 @@ final class Autocorrector {
             slots[order[rank]] = Suggestion(text: word, isPrediction: true)
         }
         if showEmoji, let previous, previous != Predictor.sentenceStart,
-           let emoji = predictor.emoji(for: previous).first {
+           let emoji = predictor.emoji(for: previous).first(where: { !removed.contains($0) }) {
             slots[2] = Suggestion(text: emoji, isEmoji: true)
         }
         return slots
@@ -158,7 +162,7 @@ final class Autocorrector {
         func consider(_ c: WordModel.Candidate, penalty: Float, barOnly: Bool) {
             guard !c.blocked, let text = localForm(c) else { return }
             let key = text.lowercased()
-            guard !seen.contains(key) else { return }
+            guard !seen.contains(key), !removed.contains(key) else { return }
             seen.insert(key)
             alternatives.append(Alternative(text: matchCase(text, to: word),
                                             score: c.score + penalty - contextBonus(previous: previous, word: key),
@@ -172,7 +176,7 @@ final class Autocorrector {
         let typedLetters = Predictor.lettersOnly(word)
         for (rank, p) in predictor.predictions(after: previous, startingWith: typedLetters).prefix(3).enumerated() {
             let key = p.word.lowercased()
-            guard !seen.contains(key), !Lexicon.blocked.contains(key) else { continue }
+            guard !seen.contains(key), !Lexicon.blocked.contains(key), !removed.contains(key) else { continue }
             seen.insert(key)
             alternatives.append(Alternative(text: matchCase(p.word, to: word),
                                             score: -30 + Float(rank), cost: 0, barOnly: true))
@@ -184,7 +188,7 @@ final class Autocorrector {
         // Decide whether to autocorrect.
         var correction: String?
         if autoApply && !leaveAlone {
-            if let forced {
+            if let forced, !removed.contains(forced.lowercased()) {
                 correction = matchCase(forced, to: word)
             } else {
                 let margin: Float = knownLocally ? 5 : (listed != nil ? 3 : 1)
@@ -211,7 +215,7 @@ final class Autocorrector {
             suggestions = [typed, next(), next()]
         }
         // Emoji for the word (or what it'll be corrected to) on the right, like Gboard.
-        if showEmoji, let emoji = predictor.emoji(for: correction ?? lower).first {
+        if showEmoji, let emoji = predictor.emoji(for: correction ?? lower).first(where: { !removed.contains($0) }) {
             suggestions[2] = Suggestion(text: emoji, isEmoji: true)
         }
         return Analysis(word: word, correction: correction, suggestions: suggestions)
@@ -223,7 +227,8 @@ final class Autocorrector {
     /// that the dictionary doesn't know get learned (Gboard does the same).
     func noteCommitted(_ word: String) {
         let lower = word.lowercased()
-        guard word.count >= 2, Self.encode(word) != nil, learned[lower] == nil else { return }
+        guard word.count >= 2, Self.encode(word) != nil, learned[lower] == nil,
+              !removed.contains(lower) else { return }
         if checkerKnows(word) || checkerKnows(lower) { return }
         if model.isReady, let letters = Self.encode(word),
            model.exactMatches(makeInput(letters: letters, offsets: [])).contains(where: { !$0.display.contains("'") }) {
@@ -238,13 +243,34 @@ final class Autocorrector {
     func learn(_ word: String) {
         let lower = word.lowercased()
         guard !lower.isEmpty, Self.encode(word) != nil else { return }
+        // Choosing a word yourself brings it back if it was removed.
+        if removed.remove(lower) != nil {
+            UserDefaults.standard.set(Array(removed), forKey: removedKey)
+        }
         learned[lower] = word
         pendingWords[lower] = nil
         model.addUserWord(word, logFreq: learnedLogFreq)
         save()
     }
 
+    /// Stop suggesting this word or emoji (hold it in the suggestion bar). If the
+    /// keyboard learned it, it's forgotten too.
+    func remove(_ text: String) {
+        let lower = text.lowercased()
+        removed.insert(lower)
+        pendingWords[lower] = nil
+        if learned.removeValue(forKey: lower) != nil {
+            model.removeAllUserWords()
+            addUserWordsToModel()
+            save()
+        }
+        UserDefaults.standard.set(Array(removed), forKey: removedKey)
+    }
+
+    /// Forgets learned words and brings back removed suggestions.
     func resetLearned() {
+        removed.removeAll()
+        UserDefaults.standard.set([String](), forKey: removedKey)
         learned.removeAll()
         pendingWords.removeAll()
         model.removeAllUserWords()

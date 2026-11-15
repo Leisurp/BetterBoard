@@ -8,8 +8,11 @@ final class SettingsPanel: UIView {
     private let settings = KeyboardSettings.shared
     private let scrollView = UIScrollView()
     private let stack = UIStackView()
+    private let hasFullAccess: Bool
+    private var themeButtons: [UIButton] = []
 
-    init(isDark: Bool) {
+    init(isDark: Bool, hasFullAccess: Bool) {
+        self.hasFullAccess = hasFullAccess
         super.init(frame: .zero)
         overrideUserInterfaceStyle = isDark ? .dark : .light
         backgroundColor = Touch.touchableBackground
@@ -68,6 +71,15 @@ final class SettingsPanel: UIView {
         addToggle("Pop-up on key press", \.keyPopup)
         addToggle("Number row", \.numberRow)
         addHeightPicker()
+        addToggle("Sound on key press", \.keySound)
+        addToggle("Vibrate on key press", \.vibrate)
+        if !hasFullAccess {
+            addNote("Sound and vibration need Full Access: Settings › General › Keyboard › Keyboards › BetterBoard.")
+        }
+
+        addSection("THEME")
+        addThemePicker()
+        addToggle("Key borders", \.keyBorders)
 
         addSection("TYPING")
         addToggle("Auto-correction", \.autocorrect)
@@ -75,6 +87,7 @@ final class SettingsPanel: UIView {
         addToggle("Emoji suggestions", \.emojiSuggestions)
         addToggle("Auto-capitalisation", \.autocap)
         addToggle("Double-space full stop", \.doubleSpacePeriod)
+        addToggle("Auto-space after punctuation", \.autoSpace)
         addToggle("Double-tap Shift for caps lock", \.capsLock)
 
         addSection("OTHER")
@@ -165,9 +178,104 @@ final class SettingsPanel: UIView {
         stack.addArrangedSubview(row("Keyboard height", picker))
     }
 
+    private func addNote(_ text: String) {
+        let label = UILabel()
+        label.text = text
+        label.font = .systemFont(ofSize: 13)
+        label.textColor = .secondaryLabel
+        label.numberOfLines = 0
+        stack.addArrangedSubview(label)
+    }
+
+    /// A row of colour swatches, like Gboard's theme picker.
+    private func addThemePicker() {
+        let scroller = UIScrollView()
+        scroller.showsHorizontalScrollIndicator = false
+        scroller.heightAnchor.constraint(equalToConstant: 78).isActive = true
+        let row = UIStackView()
+        row.axis = .horizontal
+        row.spacing = 10
+        row.translatesAutoresizingMaskIntoConstraints = false
+        scroller.addSubview(row)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: scroller.contentLayoutGuide.leadingAnchor),
+            row.trailingAnchor.constraint(equalTo: scroller.contentLayoutGuide.trailingAnchor),
+            row.topAnchor.constraint(equalTo: scroller.contentLayoutGuide.topAnchor, constant: 4),
+            row.bottomAnchor.constraint(equalTo: scroller.contentLayoutGuide.bottomAnchor),
+            row.heightAnchor.constraint(equalTo: scroller.frameLayoutGuide.heightAnchor, constant: -4),
+        ])
+        for style in ThemeStyle.allCases {
+            row.addArrangedSubview(themeSwatch(style))
+        }
+        stack.addArrangedSubview(scroller)
+        highlightTheme()
+    }
+
+    private func themeSwatch(_ style: ThemeStyle) -> UIView {
+        let preview = Theme(style: style, systemIsDark: traitCollection.userInterfaceStyle == .dark,
+                            keyBorders: true)
+        let button = UIButton(type: .custom)
+        button.tag = style.rawValue
+        button.layer.cornerRadius = 10
+        button.layer.cornerCurve = .continuous
+        button.clipsToBounds = true
+        button.widthAnchor.constraint(equalToConstant: 58).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 46).isActive = true
+        if style == .system {
+            // Half light, half dark: follows your phone.
+            let light = Theme(style: .system, systemIsDark: false, keyBorders: true)
+            let dark = Theme(style: .system, systemIsDark: true, keyBorders: true)
+            button.backgroundColor = UIColor(white: 0.82, alpha: 1)
+            let half = UIView(frame: CGRect(x: 29, y: 0, width: 29, height: 46))
+            half.backgroundColor = UIColor(white: 0.17, alpha: 1)
+            half.isUserInteractionEnabled = false
+            button.addSubview(half)
+            addMiniKeys(to: button, colors: [light.keyColor, dark.keyColor])
+        } else {
+            button.backgroundColor = preview.background
+            addMiniKeys(to: button, colors: [preview.keyColor, preview.keyColor])
+        }
+        button.addAction(UIAction { [weak self] _ in
+            self?.settings.theme = style
+            self?.highlightTheme()
+        }, for: .touchUpInside)
+        themeButtons.append(button)
+
+        let name = UILabel()
+        name.text = style.title
+        name.font = .systemFont(ofSize: 12)
+        name.textColor = .secondaryLabel
+        name.textAlignment = .center
+
+        let column = UIStackView(arrangedSubviews: [button, name])
+        column.axis = .vertical
+        column.spacing = 4
+        column.alignment = .center
+        return column
+    }
+
+    /// Three little keys on the swatch.
+    private func addMiniKeys(to button: UIButton, colors: [UIColor]) {
+        for index in 0..<3 {
+            let key = UIView(frame: CGRect(x: 7 + CGFloat(index) * 15, y: 16, width: 13, height: 14))
+            key.backgroundColor = index < 2 ? colors[0] : colors[1]
+            key.layer.cornerRadius = 3
+            key.isUserInteractionEnabled = false
+            button.addSubview(key)
+        }
+    }
+
+    private func highlightTheme() {
+        for button in themeButtons {
+            let selected = button.tag == settings.theme.rawValue
+            button.layer.borderWidth = selected ? 3 : 1
+            button.layer.borderColor = selected ? UIColor.systemBlue.cgColor : UIColor.separator.cgColor
+        }
+    }
+
     private func addResetButton() {
         let button = UIButton(type: .system)
-        button.setTitle("Reset learned words", for: .normal)
+        button.setTitle("Reset learned & removed words", for: .normal)
         button.setTitleColor(.systemRed, for: .normal)
         button.titleLabel?.font = .systemFont(ofSize: 16)
         button.contentHorizontalAlignment = .leading

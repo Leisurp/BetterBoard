@@ -40,6 +40,11 @@ final class KeyboardSettings {
         static let capsLock = "capsLock"
         static let nextWord = "nextWord"
         static let emojiSuggestions = "emojiSuggestions"
+        static let keySound = "keySound"
+        static let vibrate = "vibrate"
+        static let keyBorders = "keyBorders"
+        static let theme = "theme"
+        static let autoSpace = "autoSpace"
     }
 
     private init() {
@@ -56,7 +61,41 @@ final class KeyboardSettings {
             Key.capsLock: true,
             Key.nextWord: true,
             Key.emojiSuggestions: true,
+            Key.keySound: false,
+            Key.vibrate: false,
+            Key.keyBorders: true,
+            Key.theme: ThemeStyle.system.rawValue,
+            Key.autoSpace: false,
         ])
+    }
+
+    /// Click sound on every key press (needs Full Access).
+    var keySound: Bool {
+        get { defaults.bool(forKey: Key.keySound) }
+        set { defaults.set(newValue, forKey: Key.keySound) }
+    }
+
+    /// A light tap of the haptic engine on every key press (needs Full Access).
+    var vibrate: Bool {
+        get { defaults.bool(forKey: Key.vibrate) }
+        set { defaults.set(newValue, forKey: Key.vibrate) }
+    }
+
+    /// Keys drawn as buttons (on) or as plain text on the background (Gboard "Key borders").
+    var keyBorders: Bool {
+        get { defaults.bool(forKey: Key.keyBorders) }
+        set { defaults.set(newValue, forKey: Key.keyBorders) }
+    }
+
+    var theme: ThemeStyle {
+        get { ThemeStyle(rawValue: defaults.integer(forKey: Key.theme)) ?? .system }
+        set { defaults.set(newValue.rawValue, forKey: Key.theme) }
+    }
+
+    /// Type a space automatically after . , ! ? : ; when a letter follows straight away.
+    var autoSpace: Bool {
+        get { defaults.bool(forKey: Key.autoSpace) }
+        set { defaults.set(newValue, forKey: Key.autoSpace) }
     }
 
     /// Show predicted next words before you start typing (Gboard "Next-word suggestions").

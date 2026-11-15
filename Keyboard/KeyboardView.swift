@@ -35,6 +35,10 @@ private enum Slide {
 /// backspace repeat). Popups draw above the view's top edge, over the suggestion bar.
 final class KeyboardView: UIView {
     weak var delegate: KeyboardViewDelegate?
+    /// Every key press (for click sound / vibration).
+    var onKeyDown: ((KeyAction) -> Void)?
+    /// Each step of a space-bar cursor slide.
+    var onCursorStep: (() -> Void)?
 
     var mode: KeyboardMode = .letters {
         didSet { if oldValue != mode { rebuild(); delegate?.keyboardViewDidChangeMode(self) } }
@@ -49,7 +53,7 @@ final class KeyboardView: UIView {
         didSet { if oldValue != returnKeyType { refreshKeys() } }
     }
     var theme = Theme(isDark: false) {
-        didSet { if oldValue.isDark != theme.isDark { refreshKeys() } }
+        didSet { if !oldValue.matches(theme) { refreshKeys() } }
     }
 
     private let settings = KeyboardSettings.shared
@@ -66,6 +70,9 @@ final class KeyboardView: UIView {
         /// Where the finger was when the current key was chosen (for autocorrect).
         var touchPoint: CGPoint = .zero
         var held = false
+        /// What holding the key offers: its corner symbol, then accents etc.
+        var options: [String] = []
+        var selectedOption = 0
         var holdTimer: Timer?
         var repeatTimer: Timer?
         var repeatCount = 0
@@ -231,6 +238,7 @@ final class KeyboardView: UIView {
             state.startPoint = touch.location(in: self)
             state.touchPoint = state.startPoint
             touchStates[touch] = state
+            onKeyDown?(key.def.action)
             keyDown(state)
         }
     }
@@ -244,6 +252,13 @@ final class KeyboardView: UIView {
                 trackCursorSlide(state, at: point)
             case .backspace:
                 trackDeleteSwipe(state, at: point)
+            case .character where state.held && state.options.count > 1:
+                // Choosing from the row of options.
+                let index = popup.optionIndex(atX: point.x)
+                if index != state.selectedOption {
+                    state.selectedOption = index
+                    popup.selectOption(index)
+                }
             case .character:
                 trackKeySlide(state, at: point)
             default:
@@ -289,6 +304,7 @@ final class KeyboardView: UIView {
         }
         if moved != 0 {
             delegate?.keyboardView(self, moveCursorBy: moved)
+            onCursorStep?()
         }
     }
 
@@ -379,7 +395,9 @@ final class KeyboardView: UIView {
             } else {
                 key.isPressed = true
             }
-            if settings.holdForSymbols, key.def.hint != nil {
+            state.options = holdOptions(for: key)
+            state.selectedOption = 0
+            if !state.options.isEmpty {
                 let delay = TimeInterval(settings.longPressDelayMs) / 1000
                 state.holdTimer = Timer.scheduledTimer(timeInterval: delay,
                                                        target: self,
@@ -425,7 +443,8 @@ final class KeyboardView: UIView {
 
         switch key.def.action {
         case .character:
-            let text = state.held ? (key.def.hint ?? key.output) : key.output
+            let text = state.held && state.selectedOption < state.options.count
+                ? state.options[state.selectedOption] : key.output
             var offset: CGPoint?
             if !state.held, key.def.isLetter {
                 let pitchX = key.frame.width + Metrics.keyGap
@@ -451,12 +470,31 @@ final class KeyboardView: UIView {
         touchStates.values.contains { $0 === state }
     }
 
+    /// The corner symbol (if hold-for-symbols is on) followed by accents and similar
+    /// characters, cased to match the key.
+    private func holdOptions(for key: KeyView) -> [String] {
+        var options: [String] = []
+        if settings.holdForSymbols, let hint = key.def.hint { options.append(hint) }
+        let upper = key.def.isLetter && key.output != key.def.text
+        for option in Layout.alternates[key.def.text] ?? [] {
+            options.append(upper ? option.uppercased() : option)
+        }
+        return options
+    }
+
     @objc private func holdTimerFired(_ timer: Timer) {
         guard let state = timer.userInfo as? TouchState, isActive(state),
-              let hint = state.key.def.hint else { return }
+              let hint = state.options.first else { return }
         state.held = true
         state.holdTimer = nil
-        if popupOwner === state {
+        if state.options.count > 1 {
+            popupOwner = state
+            state.key.isPressed = true
+            bringSubviewToFront(popup)
+            popup.showOptions(state.options, keyFrame: state.key.frame, limits: popupLimits,
+                              theme: theme, fontScale: fontScale)
+            onCursorStep?()
+        } else if popupOwner === state {
             popup.setText(hint)
         } else {
             // Popups are off: still show the symbol so you know it switched.
@@ -492,10 +530,14 @@ final class KeyboardView: UIView {
         bringSubviewToFront(popup)
         popup.show(text: text,
                    keyFrame: state.key.frame,
-                   // The suggestion bar above is part of the keyboard, so popups may cover it.
-                   limits: CGRect(x: bounds.minX, y: bounds.minY - Metrics.barHeight,
-                                  width: bounds.width, height: bounds.height + Metrics.barHeight),
+                   limits: popupLimits,
                    theme: theme,
                    fontScale: fontScale)
+    }
+
+    /// The suggestion bar above is part of the keyboard, so popups may cover it.
+    private var popupLimits: CGRect {
+        CGRect(x: bounds.minX, y: bounds.minY - Metrics.barHeight,
+               width: bounds.width, height: bounds.height + Metrics.barHeight)
     }
 }

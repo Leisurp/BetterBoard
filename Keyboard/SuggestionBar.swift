@@ -18,6 +18,9 @@ protocol SuggestionBarDelegate: AnyObject {
     func suggestionBarDidTapSettings(_ bar: SuggestionBar)
     func suggestionBarDidTapGif(_ bar: SuggestionBar)
     func suggestionBarDidTapClipboard(_ bar: SuggestionBar)
+    func suggestionBarDidTapEdit(_ bar: SuggestionBar)
+    /// Held a suggestion and chose Remove: stop suggesting it.
+    func suggestionBar(_ bar: SuggestionBar, didRemove suggestion: Suggestion)
 }
 
 /// The strip above the keys: ⚙ settings button + three suggestion slots.
@@ -34,12 +37,19 @@ final class SuggestionBar: UIView {
     private let gearButton = UIButton(type: .system)
     private let gifButton = UIButton(type: .system)
     private let clipboardButton = UIButton(type: .system)
+    private let editButton = UIButton(type: .system)
+    /// "Stop suggesting …?" strip shown after holding a suggestion.
+    private let removeStrip = UIView()
+    private let removeLabel = UILabel()
+    private let removeButton = UIButton(type: .system)
+    private let cancelRemoveButton = UIButton(type: .system)
+    private var removing: Suggestion?
     private var slots: [UIButton] = []
     private var separators: [UIView] = []
     private var suggestions: [Suggestion?] = []
     /// Width of each toolbar button on the left (⚙, GIF, clipboard).
-    private let toolWidth: CGFloat = 34
-    private var toolsWidth: CGFloat { toolWidth * 3 + 4 }
+    private let toolWidth: CGFloat = 32
+    private var toolsWidth: CGFloat { toolWidth * 4 + 4 }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -67,12 +77,22 @@ final class SuggestionBar: UIView {
         }, for: .touchUpInside)
         addSubview(clipboardButton)
 
+        editButton.setImage(UIImage(systemName: "character.cursor.ibeam", withConfiguration: iconConfig), for: .normal)
+        editButton.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.delegate?.suggestionBarDidTapEdit(self)
+        }, for: .touchUpInside)
+        addSubview(editButton)
+
         for index in 0..<3 {
             let button = UIButton(type: .system)
             button.tag = index
             button.titleLabel?.lineBreakMode = .byTruncatingTail
             button.contentEdgeInsets = UIEdgeInsets(top: 0, left: 4, bottom: 0, right: 4)
             button.addTarget(self, action: #selector(slotTapped(_:)), for: .touchUpInside)
+            let hold = UILongPressGestureRecognizer(target: self, action: #selector(slotHeld(_:)))
+            hold.minimumPressDuration = 0.5
+            button.addGestureRecognizer(hold)
             slots.append(button)
             addSubview(button)
         }
@@ -81,8 +101,46 @@ final class SuggestionBar: UIView {
             separators.append(line)
             addSubview(line)
         }
+        buildRemoveStrip()
         applyTheme()
         setSuggestions([])
+    }
+
+    private func buildRemoveStrip() {
+        removeStrip.isHidden = true
+        removeLabel.font = .systemFont(ofSize: 15)
+        removeLabel.adjustsFontSizeToFitWidth = true
+        removeLabel.minimumScaleFactor = 0.7
+        removeButton.setTitle("Remove", for: .normal)
+        removeButton.titleLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
+        removeButton.setTitleColor(.systemRed, for: .normal)
+        removeButton.addAction(UIAction { [weak self] _ in
+            guard let self, let suggestion = self.removing else { return }
+            self.hideRemoveStrip()
+            self.delegate?.suggestionBar(self, didRemove: suggestion)
+        }, for: .touchUpInside)
+        cancelRemoveButton.setTitle("Cancel", for: .normal)
+        cancelRemoveButton.titleLabel?.font = .systemFont(ofSize: 15)
+        cancelRemoveButton.addAction(UIAction { [weak self] _ in self?.hideRemoveStrip() }, for: .touchUpInside)
+        for view in [removeLabel, removeButton, cancelRemoveButton] {
+            removeStrip.addSubview(view)
+        }
+        addSubview(removeStrip)
+    }
+
+    private func hideRemoveStrip() {
+        removing = nil
+        removeStrip.isHidden = true
+    }
+
+    @objc private func slotHeld(_ recognizer: UILongPressGestureRecognizer) {
+        guard recognizer.state == .began, let button = recognizer.view as? UIButton,
+              button.tag < suggestions.count, let suggestion = suggestions[button.tag] else { return }
+        removing = suggestion
+        removeLabel.text = "Stop suggesting “\(suggestion.text)”?"
+        removeStrip.isHidden = false
+        bringSubviewToFront(removeStrip)
+        setNeedsLayout()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -94,6 +152,7 @@ final class SuggestionBar: UIView {
         while padded.count < 3 { padded.append(nil) }
         guard padded != suggestions else { return }
         suggestions = padded
+        hideRemoveStrip()
         for (index, button) in slots.enumerated() {
             if let s = padded[index] {
                 button.setTitle(s.text, for: .normal)
@@ -116,6 +175,11 @@ final class SuggestionBar: UIView {
         gearButton.frame = CGRect(x: 4, y: 0, width: toolWidth, height: h)
         gifButton.frame = CGRect(x: 4 + toolWidth + 4, y: (h - 18) / 2, width: toolWidth - 8, height: 18)
         clipboardButton.frame = CGRect(x: 4 + toolWidth * 2, y: 0, width: toolWidth, height: h)
+        editButton.frame = CGRect(x: 4 + toolWidth * 3, y: 0, width: toolWidth, height: h)
+        removeStrip.frame = bounds
+        cancelRemoveButton.frame = CGRect(x: bounds.width - 70, y: 0, width: 64, height: h)
+        removeButton.frame = CGRect(x: bounds.width - 140, y: 0, width: 70, height: h)
+        removeLabel.frame = CGRect(x: 12, y: 0, width: bounds.width - 156, height: h)
         let start = toolsWidth + 2
         let slotWidth = (bounds.width - start - 6) / 3
         for (index, button) in slots.enumerated() {
@@ -139,6 +203,11 @@ final class SuggestionBar: UIView {
     private func applyTheme() {
         gearButton.tintColor = theme.hintColor
         clipboardButton.tintColor = theme.hintColor
+        editButton.tintColor = theme.hintColor
+        removeStrip.backgroundColor = theme.background
+            ?? (theme.isDark ? UIColor(white: 0.17, alpha: 1) : UIColor(white: 0.82, alpha: 1))
+        removeLabel.textColor = theme.labelColor
+        cancelRemoveButton.setTitleColor(theme.labelColor, for: .normal)
         gifButton.setTitleColor(theme.hintColor, for: .normal)
         gifButton.layer.borderColor = theme.hintColor.cgColor
         for button in slots {

@@ -60,6 +60,35 @@ enum Layout {
         "z": "*", "x": "\"", "c": "'", "v": ":", "b": ";", "n": "!", "m": "?",
     ]
 
+    /// Extra characters offered when a key is held (after its corner symbol, if any).
+    /// Letters are listed lowercase and shown uppercase when Shift is on.
+    static let alternates: [String: [String]] = [
+        "a": ["à", "á", "â", "ä", "æ", "ã", "å", "ā"],
+        "c": ["ç", "ć", "č"],
+        "e": ["è", "é", "ê", "ë", "ē", "ė", "ę"],
+        "i": ["ì", "í", "î", "ï", "ī", "į"],
+        "l": ["ł"],
+        "n": ["ñ", "ń"],
+        "o": ["ò", "ó", "ô", "ö", "õ", "ø", "œ", "ō"],
+        "s": ["ß", "ś", "š"],
+        "u": ["ù", "ú", "û", "ü", "ū"],
+        "y": ["ÿ"],
+        "z": ["ž", "ź", "ż"],
+        ".": ["?", "!", "'", "\"", ":", ";", "-", "…"],
+        ",": ["'", "\"", "-", "/", "@"],
+        // Numbers and symbols pages (like Apple's keyboard).
+        "0": ["°"],
+        "-": ["–", "—", "•"],
+        "/": ["\\"],
+        "$": ["€", "£", "¥", "₩", "₹", "¢"],
+        "&": ["§"],
+        "\"": ["“", "”", "„", "«", "»"],
+        "'": ["‘", "’", "`"],
+        "?": ["¿"],
+        "!": ["¡"],
+        "%": ["‰"],
+    ]
+
     static let sideKeyWidth: CGFloat = 1.36
     static let bottomModeWidth: CGFloat = 1.31
     static let returnWidth: CGFloat = 1.89

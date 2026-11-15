@@ -57,7 +57,9 @@ struct ContentView: View {
                 Section("How it works") {
                     Text("Hold any letter for about a third of a second to type the small symbol in its corner. Let go to insert it.")
                     Text("Slide left or right on the space bar to move the cursor. Slide left from the delete key to delete whole words, and slide back to bring them back.")
-                    Text("The buttons at the top left of the keyboard are settings ⚙, GIFs and clipboard history.")
+                    Text("Hold e, a, o and other letters for accents, or hold . for more punctuation. Slide along the row to pick one.")
+                    Text("Hold a suggestion to stop it being suggested.")
+                    Text("The buttons at the top left of the keyboard are settings ⚙ (themes, sounds and more), GIFs, clipboard history and text editing.")
                 }
             }
             .navigationTitle("BetterBoard")
