@@ -358,6 +358,8 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func afterInsert() {
+        // Typing closes the toolbar and brings the suggestions back (Gboard).
+        suggestionBar.setExpanded(false)
         if shiftState == .once {
             if shiftHeldDown {
                 typedWhileShiftHeld = true
@@ -646,6 +648,7 @@ extension KeyboardViewController: KeyboardViewDelegate {
 
     func keyboardView(_ keyboard: KeyboardView, backspaceWholeWord: Bool) {
         if handleGifSearchKey(.backspace) { return }
+        suggestionBar.setExpanded(false)
         resyncMirrorIfIdle()
         lastKeyWasSpace = false
 
@@ -827,6 +830,10 @@ extension KeyboardViewController: SuggestionBarDelegate {
 
     func suggestionBarDidTapEdit(_ bar: SuggestionBar) {
         showEditPanel()
+    }
+
+    func suggestionBarDidTapEmoji(_ bar: SuggestionBar) {
+        showEmojiPanel()
     }
 
     func suggestionBar(_ bar: SuggestionBar, didRemove suggestion: Suggestion) {

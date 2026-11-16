@@ -27,11 +27,14 @@ protocol SuggestionBarDelegate: AnyObject {
     func suggestionBarDidTapGif(_ bar: SuggestionBar)
     func suggestionBarDidTapClipboard(_ bar: SuggestionBar)
     func suggestionBarDidTapEdit(_ bar: SuggestionBar)
+    func suggestionBarDidTapEmoji(_ bar: SuggestionBar)
     /// Held a suggestion and chose Remove: stop suggesting it.
     func suggestionBar(_ bar: SuggestionBar, didRemove suggestion: Suggestion)
 }
 
-/// The strip above the keys: ⚙ settings button + three suggestion slots.
+/// The strip above the keys, laid out like Gboard: a round button on the left
+/// that opens the toolbar (settings, GIF, clipboard, edit, emoji), then three
+/// suggestion slots. Typing closes the toolbar again.
 final class SuggestionBar: UIView {
     weak var delegate: SuggestionBarDelegate?
     /// Taps on empty parts of the bar are passed to this view (the keys), so a
@@ -42,10 +45,17 @@ final class SuggestionBar: UIView {
         didSet { applyTheme() }
     }
 
+    private let expandButton = UIButton(type: .system)
+    private let expandCircle = UIView()
+    private let toolsRow = UIStackView()
     private let gearButton = UIButton(type: .system)
     private let gifButton = UIButton(type: .system)
+    private let gifBadge = UILabel()
     private let clipboardButton = UIButton(type: .system)
     private let editButton = UIButton(type: .system)
+    private let emojiButton = UIButton(type: .system)
+    /// The toolbar is showing instead of the suggestions.
+    private(set) var isExpanded = false
     /// "Stop suggesting …?" strip shown after holding a suggestion.
     private let removeStrip = UIView()
     private let removeLabel = UILabel()
@@ -55,42 +65,51 @@ final class SuggestionBar: UIView {
     private var slots: [UIButton] = []
     private var separators: [UIView] = []
     private var suggestions: [Suggestion?] = []
-    /// Width of each toolbar button on the left (⚙, GIF, clipboard).
-    private let toolWidth: CGFloat = 32
-    private var toolsWidth: CGFloat { toolWidth * 4 + 4 }
+    /// Width of the round toolbar button on the left.
+    private let expandWidth: CGFloat = 40
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = Touch.touchableBackground
 
-        let iconConfig = UIImage.SymbolConfiguration(pointSize: 16, weight: .regular)
-        gearButton.setImage(UIImage(systemName: "gearshape", withConfiguration: iconConfig), for: .normal)
-        gearButton.addTarget(self, action: #selector(gearTapped), for: .touchUpInside)
-        addSubview(gearButton)
+        // Round button on the left (Gboard's "G").
+        expandCircle.isUserInteractionEnabled = false
+        expandCircle.layer.cornerRadius = 13
+        addSubview(expandCircle)
+        expandButton.addAction(UIAction { [weak self] _ in self?.setExpanded(!(self?.isExpanded ?? false)) },
+                               for: .touchUpInside)
+        addSubview(expandButton)
 
-        gifButton.setTitle("GIF", for: .normal)
-        gifButton.titleLabel?.font = .systemFont(ofSize: 11, weight: .heavy)
-        gifButton.layer.borderWidth = 1.5
-        gifButton.layer.cornerRadius = 4
-        gifButton.addAction(UIAction { [weak self] _ in
-            guard let self else { return }
-            self.delegate?.suggestionBarDidTapGif(self)
-        }, for: .touchUpInside)
-        addSubview(gifButton)
-
-        clipboardButton.setImage(UIImage(systemName: "list.clipboard", withConfiguration: iconConfig), for: .normal)
-        clipboardButton.addAction(UIAction { [weak self] _ in
-            guard let self else { return }
-            self.delegate?.suggestionBarDidTapClipboard(self)
-        }, for: .touchUpInside)
-        addSubview(clipboardButton)
-
-        editButton.setImage(UIImage(systemName: "character.cursor.ibeam", withConfiguration: iconConfig), for: .normal)
-        editButton.addAction(UIAction { [weak self] _ in
-            guard let self else { return }
-            self.delegate?.suggestionBarDidTapEdit(self)
-        }, for: .touchUpInside)
-        addSubview(editButton)
+        // The toolbar it opens.
+        let iconConfig = UIImage.SymbolConfiguration(pointSize: 17, weight: .regular)
+        func tool(_ button: UIButton, _ icon: String?, action: @escaping (SuggestionBar) -> Void) {
+            if let icon {
+                button.setImage(UIImage(systemName: icon, withConfiguration: iconConfig), for: .normal)
+            }
+            button.addAction(UIAction { [weak self] _ in
+                guard let self else { return }
+                self.setExpanded(false)
+                action(self)
+            }, for: .touchUpInside)
+            toolsRow.addArrangedSubview(button)
+        }
+        tool(gearButton, "gearshape") { $0.delegate?.suggestionBarDidTapSettings($0) }
+        tool(gifButton, nil) { $0.delegate?.suggestionBarDidTapGif($0) }
+        tool(clipboardButton, "list.clipboard") { $0.delegate?.suggestionBarDidTapClipboard($0) }
+        tool(editButton, "character.cursor.ibeam") { $0.delegate?.suggestionBarDidTapEdit($0) }
+        tool(emojiButton, "face.smiling") { $0.delegate?.suggestionBarDidTapEmoji($0) }
+        // "GIF" in a little rounded box, centred in its button.
+        gifBadge.text = "GIF"
+        gifBadge.font = .systemFont(ofSize: 11, weight: .heavy)
+        gifBadge.textAlignment = .center
+        gifBadge.layer.borderWidth = 1.5
+        gifBadge.layer.cornerRadius = 4
+        gifBadge.isUserInteractionEnabled = false
+        gifButton.addSubview(gifBadge)
+        toolsRow.axis = .horizontal
+        toolsRow.distribution = .fillEqually
+        toolsRow.isHidden = true
+        addSubview(toolsRow)
 
         for index in 0..<3 {
             let button = UIButton(type: .system)
@@ -112,6 +131,35 @@ final class SuggestionBar: UIView {
         buildRemoveStrip()
         applyTheme()
         setSuggestions([])
+        updateExpandIcon()
+    }
+
+    /// Shows the toolbar in place of the suggestions (or back again).
+    func setExpanded(_ expanded: Bool) {
+        guard expanded != isExpanded else { return }
+        isExpanded = expanded
+        if expanded { hideRemoveStrip() }
+        updateExpandIcon()
+        UIView.transition(with: self, duration: 0.15, options: .transitionCrossDissolve) {
+            self.toolsRow.isHidden = !expanded
+            self.applySlotVisibility()
+        }
+    }
+
+    private func updateExpandIcon() {
+        let config = UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
+        let name = isExpanded ? "chevron.left" : "square.grid.2x2"
+        expandButton.setImage(UIImage(systemName: name, withConfiguration: config), for: .normal)
+    }
+
+    private func applySlotVisibility() {
+        for (index, button) in slots.enumerated() {
+            button.isHidden = isExpanded || index >= suggestions.count || suggestions[index] == nil
+        }
+        for (index, line) in separators.enumerated() {
+            line.isHidden = isExpanded || index + 1 >= suggestions.count
+                || suggestions[index] == nil || suggestions[index + 1] == nil
+        }
     }
 
     private func buildRemoveStrip() {
@@ -166,30 +214,28 @@ final class SuggestionBar: UIView {
                 button.setTitle(s.label ?? s.text, for: .normal)
                 button.titleLabel?.font = .systemFont(ofSize: s.isEmoji ? 22 : 17,
                                                       weight: s.isAutocorrect ? .semibold : .regular)
-                button.isHidden = false
             } else {
                 button.setTitle(nil, for: .normal)
-                button.isHidden = true
             }
         }
-        for (index, line) in separators.enumerated() {
-            line.isHidden = padded[index] == nil || padded[index + 1] == nil
-        }
+        applySlotVisibility()
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
         let h = bounds.height
-        gearButton.frame = CGRect(x: 4, y: 0, width: toolWidth, height: h)
-        gifButton.frame = CGRect(x: 4 + toolWidth + 4, y: (h - 18) / 2, width: toolWidth - 8, height: 18)
-        clipboardButton.frame = CGRect(x: 4 + toolWidth * 2, y: 0, width: toolWidth, height: h)
-        editButton.frame = CGRect(x: 4 + toolWidth * 3, y: 0, width: toolWidth, height: h)
+        expandButton.frame = CGRect(x: 4, y: 0, width: expandWidth, height: h)
+        expandCircle.frame = CGRect(x: 4 + (expandWidth - 26) / 2, y: (h - 26) / 2, width: 26, height: 26)
+        toolsRow.frame = CGRect(x: 4 + expandWidth + 4, y: 0, width: bounds.width - expandWidth - 16, height: h)
+        toolsRow.layoutIfNeeded()
+        gifBadge.frame = CGRect(x: (gifButton.bounds.width - 30) / 2, y: (gifButton.bounds.height - 18) / 2,
+                                width: 30, height: 18)
         removeStrip.frame = bounds
         cancelRemoveButton.frame = CGRect(x: bounds.width - 70, y: 0, width: 64, height: h)
         removeButton.frame = CGRect(x: bounds.width - 140, y: 0, width: 70, height: h)
         removeLabel.frame = CGRect(x: 12, y: 0, width: bounds.width - 156, height: h)
-        let start = toolsWidth + 2
-        let slotWidth = (bounds.width - start - 6) / 3
+        let start = 4 + expandWidth + 2
+        let slotWidth = (bounds.width - start - 8) / 3
         for (index, button) in slots.enumerated() {
             button.frame = CGRect(x: start + CGFloat(index) * slotWidth, y: 0, width: slotWidth, height: h)
         }
@@ -209,15 +255,17 @@ final class SuggestionBar: UIView {
     }
 
     private func applyTheme() {
-        gearButton.tintColor = theme.hintColor
-        clipboardButton.tintColor = theme.hintColor
-        editButton.tintColor = theme.hintColor
+        for button in [gearButton, clipboardButton, editButton, emojiButton] {
+            button.tintColor = theme.labelColor.withAlphaComponent(0.75)
+        }
+        expandButton.tintColor = theme.labelColor.withAlphaComponent(0.8)
+        expandCircle.backgroundColor = theme.labelColor.withAlphaComponent(theme.isDark ? 0.14 : 0.08)
         removeStrip.backgroundColor = theme.background
             ?? (theme.isDark ? UIColor(white: 0.17, alpha: 1) : UIColor(white: 0.82, alpha: 1))
         removeLabel.textColor = theme.labelColor
         cancelRemoveButton.setTitleColor(theme.labelColor, for: .normal)
-        gifButton.setTitleColor(theme.hintColor, for: .normal)
-        gifButton.layer.borderColor = theme.hintColor.cgColor
+        gifBadge.textColor = theme.labelColor.withAlphaComponent(0.75)
+        gifBadge.layer.borderColor = theme.labelColor.withAlphaComponent(0.75).cgColor
         for button in slots {
             button.setTitleColor(theme.labelColor, for: .normal)
             button.tintColor = theme.labelColor
@@ -225,10 +273,6 @@ final class SuggestionBar: UIView {
         for line in separators {
             line.backgroundColor = theme.separatorColor
         }
-    }
-
-    @objc private func gearTapped() {
-        delegate?.suggestionBarDidTapSettings(self)
     }
 
     @objc private func slotTapped(_ sender: UIButton) {
