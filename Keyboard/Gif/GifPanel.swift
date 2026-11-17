@@ -293,8 +293,15 @@ final class GifSearchField: UIView {
         let pill = UIView()
         pill.backgroundColor = UIColor.label.withAlphaComponent(0.1)
         pill.layer.cornerRadius = 13
-        let icon = UIImageView(image: UIImage(systemName: "magnifyingglass"))
+        let icon = UIImageView(image: UIImage(systemName: "magnifyingglass",
+                                              withConfiguration: UIImage.SymbolConfiguration(pointSize: 14)))
         icon.tintColor = .secondaryLabel
+        icon.contentMode = .scaleAspectFit
+        // Keep the icon its own size; the text takes the rest of the pill.
+        icon.setContentHuggingPriority(.required, for: .horizontal)
+        icon.setContentCompressionResistancePriority(.required, for: .horizontal)
+        label.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        label.textAlignment = .left
         label.font = .systemFont(ofSize: 16)
         label.textColor = .label
         cancel.setTitle("Cancel", for: .normal)
@@ -311,6 +318,8 @@ final class GifSearchField: UIView {
             pill.heightAnchor.constraint(equalToConstant: 26),
             icon.leadingAnchor.constraint(equalTo: pill.leadingAnchor, constant: 8),
             icon.centerYAnchor.constraint(equalTo: pill.centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 16),
+            icon.heightAnchor.constraint(equalToConstant: 16),
             label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6),
             label.trailingAnchor.constraint(equalTo: pill.trailingAnchor, constant: -8),
             label.centerYAnchor.constraint(equalTo: pill.centerYAnchor),
