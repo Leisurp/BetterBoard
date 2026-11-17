@@ -53,6 +53,8 @@ final class KeyboardSettings {
         static let phrasePredictions = "phrasePredictions"
         static let emojiPanel = "emojiPanel"
         static let pasteSuggestion = "pasteSuggestion"
+        static let topRowNumbers = "topRowNumbers"
+        static let clipboardAutoDelete = "clipboardAutoDelete"
     }
 
     private init() {
@@ -82,7 +84,21 @@ final class KeyboardSettings {
             Key.phrasePredictions: true,
             Key.emojiPanel: true,
             Key.pasteSuggestion: true,
+            Key.topRowNumbers: true,
+            Key.clipboardAutoDelete: false,
         ])
+    }
+
+    /// Hold q–p for 1–0 (Gboard). Off = the symbols % \ | = [ ] < > { }.
+    var topRowNumbers: Bool {
+        get { defaults.bool(forKey: Key.topRowNumbers) }
+        set { defaults.set(newValue, forKey: Key.topRowNumbers) }
+    }
+
+    /// Delete unpinned clipboard items after an hour (Gboard).
+    var clipboardAutoDelete: Bool {
+        get { defaults.bool(forKey: Key.clipboardAutoDelete) }
+        set { defaults.set(newValue, forKey: Key.clipboardAutoDelete) }
     }
 
     /// Key click volume, 0...1.

@@ -8,6 +8,8 @@ final class SettingsPanel: UIView {
     var onOpenThemeEditor: (() -> Void)?
     /// Opens shortcuts & personal info in the BetterBoard app.
     var onOpenShortcuts: (() -> Void)?
+    /// Opens the list of learned and removed words.
+    var onShowWords: (() -> Void)?
     /// Plays a click / vibration so you can hear and feel the new strength.
     var onPreviewFeedback: (() -> Void)?
 
@@ -74,6 +76,7 @@ final class SettingsPanel: UIView {
         addToggle("Hold for symbols", \.holdForSymbols)
         addDelaySlider()
         addToggle("Show symbol hints", \.showHints)
+        addToggle("Numbers on top row (hold q–p)", \.topRowNumbers)
         addToggle("Pop-up on key press", \.keyPopup)
         addToggle("Number row", \.numberRow)
         addHeightPicker()
@@ -109,6 +112,13 @@ final class SettingsPanel: UIView {
         addToggle("Double-space full stop", \.doubleSpacePeriod)
         addToggle("Auto-space after punctuation", \.autoSpace)
         addToggle("Double-tap Shift for caps lock", \.capsLock)
+
+        addSection("CLIPBOARD")
+        addToggle("Delete clipboard items after 1 hour", \.clipboardAutoDelete)
+        addNote("Pinned items are always kept.")
+
+        addSection("WORDS")
+        addLinkButton("Learned & removed words \u{203A}") { [weak self] in self?.onShowWords?() }
 
         addSection("OTHER")
         addResetButton()

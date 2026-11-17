@@ -72,9 +72,84 @@ final class KeyboardViewController: UIInputViewController {
     private func resyncMirror() {
         let fresh = String((proxy.documentContextBeforeInput ?? "").suffix(mirrorLimit))
         if fresh != mirror {
+            // Apps may give back less text than we keep, so only a real difference
+            // (cursor moved, text changed by the app) wipes the undo history.
+            if !(mirror.hasSuffix(fresh) || fresh.hasSuffix(mirror)) {
+                clearEditHistory()
+            }
             mirror = fresh
             wordOffsets.removeAll() // cursor moved or text changed: touch history no longer applies
         }
+    }
+
+    // MARK: Undo / redo
+    //
+    // Keyboards can't use the app's own undo, so the keyboard remembers what it
+    // typed and deleted itself, a word at a time. Moving the cursor (or the app
+    // changing the text) clears it, so undo can never edit the wrong place.
+
+    private enum EditOp {
+        case insert(String)
+        case delete(String)
+    }
+    private var undoStack: [EditOp] = []
+    private var redoStack: [EditOp] = []
+    private var recordingEdits = true
+    private let maxUndo = 60
+
+    private func clearEditHistory() {
+        undoStack.removeAll()
+        redoStack.removeAll()
+    }
+
+    private func recordInsert(_ text: String) {
+        guard recordingEdits, !text.isEmpty else { return }
+        redoStack.removeAll()
+        // Keep adding to the current word; a new word (after a space) starts a new step.
+        if case .insert(let last)? = undoStack.last,
+           !(last.last?.isWhitespace == true && text.first?.isWhitespace == false) {
+            undoStack[undoStack.count - 1] = .insert(last + text)
+        } else {
+            undoStack.append(.insert(text))
+        }
+        if undoStack.count > maxUndo { undoStack.removeFirst() }
+    }
+
+    private func recordDelete(_ text: String) {
+        guard recordingEdits, !text.isEmpty else { return }
+        redoStack.removeAll()
+        if case .delete(let previous)? = undoStack.last,
+           !(previous.first?.isWhitespace == false && text.last?.isWhitespace == true) {
+            undoStack[undoStack.count - 1] = .delete(text + previous)
+        } else {
+            undoStack.append(.delete(text))
+        }
+        if undoStack.count > maxUndo { undoStack.removeFirst() }
+    }
+
+    /// Returns false if there was nothing to undo.
+    private func undoLastEdit() -> Bool {
+        guard let op = undoStack.popLast() else { return false }
+        recordingEdits = false
+        switch op {
+        case .insert(let text): deleteBackward(text.count)
+        case .delete(let text): insert(text)
+        }
+        recordingEdits = true
+        redoStack.append(op)
+        return true
+    }
+
+    private func redoLastEdit() -> Bool {
+        guard let op = redoStack.popLast() else { return false }
+        recordingEdits = false
+        switch op {
+        case .insert(let text): insert(text)
+        case .delete(let text): deleteBackward(text.count)
+        }
+        recordingEdits = true
+        undoStack.append(op)
+        return true
     }
 
     private func resyncMirrorIfIdle() {
@@ -85,6 +160,7 @@ final class KeyboardViewController: UIInputViewController {
 
     private func insert(_ text: String) {
         proxy.insertText(text)
+        recordInsert(text)
         mirror += text
         if mirror.utf16.count > mirrorLimit * 2 {
             mirror = String(mirror.suffix(mirrorLimit))
@@ -93,6 +169,14 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func deleteBackward(_ count: Int = 1) {
+        if recordingEdits, count > 0 {
+            // Remember what's deleted so it can be undone (if we know what it was).
+            if mirror.count >= count {
+                recordDelete(String(mirror.suffix(count)))
+            } else {
+                clearEditHistory()
+            }
+        }
         for _ in 0..<max(count, 0) {
             proxy.deleteBackward()
             if !mirror.isEmpty { mirror.removeLast() }
@@ -539,6 +623,7 @@ final class KeyboardViewController: UIInputViewController {
         panel.onResetLearned = { [weak self] in self?.autocorrector.resetLearned() }
         panel.onOpenThemeEditor = { [weak self] in self?.openApp("betterboard://setup/theme") }
         panel.onOpenShortcuts = { [weak self] in self?.openApp("betterboard://setup/shortcuts") }
+        panel.onShowWords = { [weak self] in self?.showWordsPanel() }
         panel.onPreviewFeedback = { [weak self] in
             guard let self else { return }
             self.feedback.preview(hasFullAccess: self.fullAccess)
@@ -555,6 +640,24 @@ final class KeyboardViewController: UIInputViewController {
         keyboardView.isHidden = true
         suggestionBar.isHidden = true
         updateBackgroundImageVisibility()
+    }
+
+    /// Learned & removed words, shown on top of the settings.
+    private func showWordsPanel() {
+        guard let settingsPanel else { return }
+        let words = WordsPanel(autocorrector: autocorrector, isDark: keyboardView.theme.isDark)
+        words.onBack = { [weak self, weak words] in
+            words?.removeFromSuperview()
+            self?.cachedAnalysis = nil
+        }
+        words.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(words)
+        NSLayoutConstraint.activate([
+            words.topAnchor.constraint(equalTo: settingsPanel.topAnchor),
+            words.leadingAnchor.constraint(equalTo: settingsPanel.leadingAnchor),
+            words.trailingAnchor.constraint(equalTo: settingsPanel.trailingAnchor),
+            words.bottomAnchor.constraint(equalTo: settingsPanel.bottomAnchor),
+        ])
     }
 
     private func hideSettings() {
@@ -708,6 +811,7 @@ extension KeyboardViewController: KeyboardViewDelegate {
     /// Moves the cursor by whole characters. The host counts in UTF-16 units, so
     /// step over each character (emoji, accented letters) as one.
     private func moveCursor(by offset: Int) {
+        clearEditHistory()
         for _ in 0..<abs(offset) {
             if offset < 0 {
                 guard let ch = (proxy.documentContextBeforeInput ?? "").last else { break }
@@ -724,6 +828,7 @@ extension KeyboardViewController: KeyboardViewDelegate {
     /// Moves the cursor by a UTF-16 count worked out from the host's text.
     private func moveCursor(utf16 offset: Int) {
         guard offset != 0 else { return }
+        clearEditHistory()
         proxy.adjustTextPosition(byCharacterOffset: offset)
         lastEditTime = 0
     }
@@ -880,6 +985,9 @@ extension KeyboardViewController: GifPanelDelegate, ClipboardPanelDelegate {
 
     @objc private func checkClipboard() {
         guard hasFullAccess else { return }
+        if settings.clipboardAutoDelete, clipboard.deleteOld(maxAge: 3600) {
+            clipboardPanel?.reload()
+        }
         // A custom theme sent from the BetterBoard app.
         if CustomThemeStore.receive(from: .general) {
             settings.theme = .custom
@@ -1075,6 +1183,7 @@ extension KeyboardViewController: GifPanelDelegate, ClipboardPanelDelegate {
     // MARK: Clipboard
 
     private func showClipboardPanel() {
+        if settings.clipboardAutoDelete { clipboard.deleteOld(maxAge: 3600) }
         dismissPanels()
         if hasFullAccess { checkClipboard() }
         let panel = ClipboardPanel(store: clipboard, isDark: isDark, hasFullAccess: hasFullAccess)
@@ -1131,6 +1240,10 @@ extension KeyboardViewController: EditPanelDelegate {
             moveCursor(utf16: -Self.wordSpan(before.reversed()))
         case .wordRight:
             moveCursor(utf16: Self.wordSpan(Array(after)))
+        case .undo:
+            if !undoLastEdit() { panel.flash("Nothing to undo. Undo works on what you've typed since the cursor last moved.") }
+        case .redo:
+            if !redoLastEdit() { panel.flash("Nothing to redo.") }
         case .lineStart:
             let line = before.split(separator: "\n", omittingEmptySubsequences: false).last ?? ""
             moveCursor(utf16: -line.utf16.count)
@@ -1149,6 +1262,7 @@ extension KeyboardViewController: EditPanelDelegate {
             UIPasteboard.general.string = selected
             if action == .cut {
                 proxy.deleteBackward() // deletes the selection
+                clearEditHistory()
                 lastEditTime = 0
                 panel.flash("Cut")
             } else {

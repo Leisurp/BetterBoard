@@ -479,6 +479,7 @@ final class KeyboardView: UIView {
     private func holdOptions(for key: KeyView) -> [String] {
         var options: [String] = []
         if settings.holdForSymbols, let hint = key.def.hint { options.append(hint) }
+        if settings.holdForSymbols, let extra = key.def.extraHold { options.append(extra) }
         let upper = key.def.isLetter && key.output != key.def.text
         for option in Layout.alternates[key.def.text] ?? [] {
             options.append(upper ? option.uppercased() : option)

@@ -79,6 +79,18 @@ final class ClipboardStore {
         save()
     }
 
+    /// Drops unpinned items older than `maxAge` (the "delete after 1 hour" setting).
+    /// Returns true if anything was removed.
+    @discardableResult
+    func deleteOld(maxAge: TimeInterval) -> Bool {
+        let cutoff = Date().addingTimeInterval(-maxAge)
+        let before = items.count
+        items.removeAll { !$0.pinned && $0.date < cutoff }
+        guard items.count != before else { return false }
+        save()
+        return true
+    }
+
     func togglePin(_ id: UUID) {
         guard let index = items.firstIndex(where: { $0.id == id }) else { return }
         items[index].pinned.toggle()

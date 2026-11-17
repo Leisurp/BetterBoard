@@ -281,6 +281,32 @@ final class Autocorrector {
         UserDefaults.standard.set(Array(removed), forKey: removedKey)
     }
 
+    /// Words the keyboard has learned, A–Z.
+    var learnedWords: [String] {
+        learned.values.sorted { $0.lowercased() < $1.lowercased() }
+    }
+
+    /// Words and emoji you've told it to stop suggesting, A–Z.
+    var removedWords: [String] {
+        removed.sorted()
+    }
+
+    /// Forget one learned word.
+    func forget(_ word: String) {
+        let lower = word.lowercased()
+        guard learned.removeValue(forKey: lower) != nil else { return }
+        pendingWords[lower] = nil
+        model.removeAllUserWords()
+        addUserWordsToModel()
+        save()
+    }
+
+    /// Suggest a removed word again.
+    func restore(_ word: String) {
+        guard removed.remove(word.lowercased()) != nil else { return }
+        UserDefaults.standard.set(Array(removed), forKey: removedKey)
+    }
+
     /// Forgets learned words and brings back removed suggestions.
     func resetLearned() {
         removed.removeAll()

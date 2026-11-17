@@ -3,6 +3,7 @@ import UIKit
 enum EditAction {
     case left, right, wordLeft, wordRight, lineStart, lineEnd
     case copy, cut, paste, delete
+    case undo, redo
 }
 
 protocol EditPanelDelegate: AnyObject {
@@ -73,8 +74,10 @@ final class EditPanel: UIView {
         tipLabel.minimumScaleFactor = 0.8
 
         let rows = UIStackView(arrangedSubviews: [
-            row([key(icon: "arrow.left.to.line", text: "Line start", action: .lineStart),
-                 key(icon: "arrow.right.to.line", text: "Line end", action: .lineEnd)]),
+            row([key(icon: "arrow.left.to.line", text: "Start", action: .lineStart),
+                 key(icon: "arrow.uturn.backward", text: "Undo", action: .undo, repeats: true),
+                 key(icon: "arrow.uturn.forward", text: "Redo", action: .redo, repeats: true),
+                 key(icon: "arrow.right.to.line", text: "End", action: .lineEnd)]),
             row([key(icon: "chevron.left.2", text: nil, action: .wordLeft, repeats: true),
                  key(icon: "chevron.left", text: nil, action: .left, repeats: true),
                  key(icon: "chevron.right", text: nil, action: .right, repeats: true),

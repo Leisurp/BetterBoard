@@ -57,6 +57,8 @@ struct KeyDef {
     let text: String
     let hint: String?
     let width: KeyWidth
+    /// Also offered when held, after the hint (the top row's symbol when it shows numbers).
+    var extraHold: String? = nil
 
     var isLetter: Bool {
         action == .character && text.count == 1 && (text.first?.isLetter ?? false)
@@ -147,7 +149,7 @@ enum Layout {
             if numberRow {
                 rows.append(charRow("1234567890"))
             }
-            rows.append(letterRow("qwertyuiop"))
+            rows.append(topLetterRow(numbers: !numberRow && KeyboardSettings.shared.topRowNumbers))
             rows.append(letterRow("asdfghjkl"))
             rows.append(KeyRow(
                 keys: [KeyDef.special(.shift, width: .units(sideKeyWidth))]
@@ -173,6 +175,18 @@ enum Layout {
                 bottomRow(modeKey: .special(.mode(.letters), "ABC", width: .units(bottomModeWidth)), field: field),
             ]
         }
+    }
+
+    /// q–p, with 1–0 in the corners (Gboard) or the symbols. With numbers, the symbol
+    /// is still there as a second choice when you hold the key.
+    private static func topLetterRow(numbers: Bool) -> KeyRow {
+        guard numbers else { return letterRow("qwertyuiop") }
+        let digits = Array("1234567890")
+        return KeyRow(keys: Array("qwertyuiop").enumerated().map { index, letter in
+            var key = KeyDef.char(String(letter), hint: String(digits[index]))
+            key.extraHold = symbolHints[letter]
+            return key
+        })
     }
 
     private static func letterRow(_ letters: String) -> KeyRow {
