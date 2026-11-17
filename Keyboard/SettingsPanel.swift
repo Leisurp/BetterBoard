@@ -94,7 +94,8 @@ final class SettingsPanel: UIView {
         if let status = CustomThemeStore.status {
             addNote("Custom theme: " + status)
         }
-        addToggle("Key borders", \.keyBorders)
+        let bordersSwitch = addToggle("Key borders", \.keyBorders)
+        addResetThemeButton(bordersSwitch: bordersSwitch)
         addLinkButton("Make your own theme (photo, key colours) in the BetterBoard app \u{203A}") { [weak self] in
             self?.onOpenThemeEditor?()
         }
@@ -163,7 +164,8 @@ final class SettingsPanel: UIView {
         return row
     }
 
-    private func addToggle(_ title: String, _ keyPath: ReferenceWritableKeyPath<KeyboardSettings, Bool>) {
+    @discardableResult
+    private func addToggle(_ title: String, _ keyPath: ReferenceWritableKeyPath<KeyboardSettings, Bool>) -> UISwitch {
         let toggle = UISwitch()
         toggle.isOn = settings[keyPath: keyPath]
         toggle.addAction(UIAction { [weak self] action in
@@ -171,6 +173,26 @@ final class SettingsPanel: UIView {
             self?.settings[keyPath: keyPath] = sender.isOn
         }, for: .valueChanged)
         stack.addArrangedSubview(row(title, toggle))
+        return toggle
+    }
+
+    /// Back to the standard Apple-style look (your custom theme is kept, so you can pick it again).
+    private func addResetThemeButton(bordersSwitch: UISwitch) {
+        let button = UIButton(type: .system)
+        button.setTitle("Reset to the standard look", for: .normal)
+        button.setImage(UIImage(systemName: "arrow.counterclockwise"), for: .normal)
+        button.titleLabel?.font = .systemFont(ofSize: 16)
+        button.contentHorizontalAlignment = .leading
+        button.addAction(UIAction { [weak self] action in
+            guard let self else { return }
+            self.settings.theme = .system
+            self.settings.keyBorders = true
+            bordersSwitch.setOn(true, animated: true)
+            self.highlightTheme()
+            (action.sender as? UIButton)?.setTitle("Standard look restored (tap Done)", for: .normal)
+        }, for: .touchUpInside)
+        button.heightAnchor.constraint(equalToConstant: 40).isActive = true
+        stack.addArrangedSubview(button)
     }
 
     private func addSlider(_ title: String, _ keyPath: ReferenceWritableKeyPath<KeyboardSettings, Double>) {

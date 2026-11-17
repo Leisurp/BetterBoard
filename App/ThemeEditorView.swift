@@ -100,6 +100,19 @@ struct ThemeEditorView: View {
             }
 
             Section {
+                Button("Start over", role: .destructive) {
+                    backgroundHex = "2B2B2EFF"; keyHex = "48484CFF"; borderOn = false
+                    borderHex = "FFFFFF66"; labelHex = "FFFFFFFF"; darken = 0.25; position = 0.5
+                    photo = nil
+                    photoMessage = nil
+                    status = nil
+                    ThemePhotoFile.delete()
+                }
+            } footer: {
+                Text("Clears the photo and colours here. To put the keyboard back to the standard Apple look, open ⚙ settings in the keyboard and tap **Reset to the standard look**.")
+            }
+
+            Section {
                 Button("Apply to keyboard") { apply() }
                     .font(.headline)
                 if let status {
@@ -231,8 +244,10 @@ struct ThemeEditorView: View {
             let x = (size.width - drawn.width) * position
             let y = (size.height - drawn.height) * position
             photo.draw(in: CGRect(origin: CGPoint(x: x, y: y), size: drawn))
+            // Darken on top of the photo. (Plain `context.fill` *replaces* the pixels
+            // underneath, which wiped the photo out completely.)
             UIColor.black.withAlphaComponent(darken).setFill()
-            context.fill(CGRect(origin: .zero, size: size))
+            context.fill(CGRect(origin: .zero, size: size), blendMode: .normal)
         }
     }
 
