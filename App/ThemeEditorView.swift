@@ -1,5 +1,6 @@
 import PhotosUI
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Must match CustomThemeData in the keyboard.
 struct CustomThemeData: Codable {
@@ -21,7 +22,9 @@ struct ThemeEditorView: View {
     @AppStorage("themeDarken") private var darken = 0.25
     @AppStorage("themePosition") private var position = 0.5
 
-    @State private var pickerItem: PhotosPickerItem?
+    @State private var showPicker = false
+    @State private var loadingPhoto = false
+    @State private var photoMessage: String?
     @State private var photo: UIImage? = ThemePhotoFile.load()
     @State private var status: String?
 
@@ -38,8 +41,19 @@ struct ThemeEditorView: View {
             }
 
             Section("Background photo") {
-                PhotosPicker(selection: $pickerItem, matching: .images) {
+                Button {
+                    showPicker = true
+                } label: {
                     Label(photo == nil ? "Choose a photo" : "Choose a different photo", systemImage: "photo")
+                }
+                if loadingPhoto {
+                    HStack {
+                        ProgressView()
+                        Text("Loading photo…").foregroundStyle(.secondary)
+                    }
+                }
+                if let photoMessage {
+                    Text(photoMessage).font(.callout)
                 }
                 if photo != nil {
                     LabeledContent("Position") {
@@ -50,6 +64,7 @@ struct ThemeEditorView: View {
                     }
                     Button("Remove photo", role: .destructive) {
                         photo = nil
+                        photoMessage = nil
                         ThemePhotoFile.delete()
                     }
                 }
@@ -100,19 +115,32 @@ struct ThemeEditorView: View {
             }
         }
         .navigationTitle("Custom theme")
-        .onChange(of: pickerItem) { _, item in
-            guard let item else { return }
-            Task {
-                if let data = try? await item.loadTransferable(type: Data.self),
-                   let image = UIImage(data: data) {
+        .sheet(isPresented: $showPicker) {
+            PhotoPicker { provider in
+                showPicker = false
+                guard let provider else { return }
+                loadingPhoto = true
+                photoMessage = nil
+                PhotoPicker.loadImage(from: provider) { image in
+                    loadingPhoto = false
+                    guard let image else {
+                        photoMessage = "⚠️ Couldn't open that photo. If it's stored in iCloud, open it in Photos first so it downloads, then try again."
+                        return
+                    }
                     let small = ThemePhotoFile.downscale(image, maxSide: 1800)
                     ThemePhotoFile.save(small)
-                    await MainActor.run {
-                        photo = small
-                        position = 0.5
+                    photo = small
+                    position = 0.5
+                    // Solid keys would hide the photo, so switch to see-through keys.
+                    if UIColor(hex: keyHex).cgColor.alpha > 0.6 {
+                        keyHex = "FFFFFF33"; borderOn = true; borderHex = "FFFFFF80"; labelHex = "FFFFFFFF"
+                        photoMessage = "✅ Photo added (\(Int(small.size.width))×\(Int(small.size.height))). Keys switched to see-through so it shows. Change them below if you like."
+                    } else {
+                        photoMessage = "✅ Photo added (\(Int(small.size.width))×\(Int(small.size.height)))."
                     }
                 }
             }
+            .ignoresSafeArea()
         }
     }
 
@@ -180,15 +208,19 @@ struct ThemeEditorView: View {
                .jpegData(compressionQuality: 0.85) {
             item["com.leisurp.betterboard.theme-image"] = jpeg
         }
+        let sentPhoto = item["com.leisurp.betterboard.theme-image"] != nil
         UIPasteboard.general.setItems([item], options: [
             .localOnly: true,
             .expirationDate: Date().addingTimeInterval(600),
         ])
-        status = "✅ Sent. Now open BetterBoard in any app (within 10 minutes) and it'll switch to your theme."
+        status = sentPhoto
+            ? "✅ Sent with your photo. Now open BetterBoard in any app (within 10 minutes) and it'll switch to your theme."
+            : "✅ Sent (colours only, no photo). Now open BetterBoard in any app within 10 minutes."
     }
 
     /// The photo cropped to the keyboard's shape, with the darkening baked in.
     static func render(photo: UIImage, width: CGFloat, position: Double, darken: Double) -> UIImage {
+        let width = max(width, 10) // the preview can be measured as 0 wide at first
         let size = CGSize(width: width.rounded(), height: (width / keyboardAspect).rounded())
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
@@ -262,5 +294,59 @@ extension UIColor {
         if parts.count == 2 { parts = [parts[0], parts[0], parts[0], parts[1]] }
         while parts.count < 4 { parts.append(1) }
         return parts.prefix(4).map { String(format: "%02X", Int(($0 * 255).rounded())) }.joined()
+    }
+}
+
+/// Apple's photo picker (no permission needed: you only share the photo you pick).
+struct PhotoPicker: UIViewControllerRepresentable {
+    var onFinish: (NSItemProvider?) -> Void
+
+    func makeUIViewController(context: Context) -> PHPickerViewController {
+        var config = PHPickerConfiguration()
+        config.filter = .images
+        config.selectionLimit = 1
+        let picker = PHPickerViewController(configuration: config)
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ controller: PHPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(onFinish: onFinish) }
+
+    final class Coordinator: NSObject, PHPickerViewControllerDelegate {
+        let onFinish: (NSItemProvider?) -> Void
+        init(onFinish: @escaping (NSItemProvider?) -> Void) { self.onFinish = onFinish }
+
+        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+            onFinish(results.first?.itemProvider)
+        }
+    }
+
+    /// Loads the picked photo, trying the image itself first and then its raw data
+    /// (covers HEIC, ProRAW, screenshots…). Calls back on the main thread.
+    static func loadImage(from provider: NSItemProvider, completion: @escaping (UIImage?) -> Void) {
+        func finish(_ image: UIImage?) {
+            DispatchQueue.main.async { completion(image) }
+        }
+        func loadData() {
+            let type = provider.registeredTypeIdentifiers.first {
+                UTType($0)?.conforms(to: .image) ?? false
+            } ?? UTType.image.identifier
+            provider.loadDataRepresentation(forTypeIdentifier: type) { data, _ in
+                finish(data.flatMap { UIImage(data: $0) })
+            }
+        }
+        if provider.canLoadObject(ofClass: UIImage.self) {
+            provider.loadObject(ofClass: UIImage.self) { object, _ in
+                if let image = object as? UIImage {
+                    finish(image)
+                } else {
+                    loadData()
+                }
+            }
+        } else {
+            loadData()
+        }
     }
 }

@@ -91,6 +91,9 @@ final class SettingsPanel: UIView {
 
         addSection("THEME")
         addThemePicker()
+        if let status = CustomThemeStore.status {
+            addNote("Custom theme: " + status)
+        }
         addToggle("Key borders", \.keyBorders)
         addLinkButton("Make your own theme (photo, key colours) in the BetterBoard app \u{203A}") { [weak self] in
             self?.onOpenThemeEditor?()

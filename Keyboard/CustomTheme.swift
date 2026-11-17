@@ -19,6 +19,12 @@ enum CustomThemeStore {
     static let themeType = "com.leisurp.betterboard.theme"
     static let imageType = "com.leisurp.betterboard.theme-image"
     private static let defaultsKey = "customTheme"
+    private static let statusKey = "customThemeStatus"
+
+    /// What happened the last time a theme arrived (shown in settings).
+    static var status: String? {
+        UserDefaults.standard.string(forKey: statusKey)
+    }
 
     /// Bumped whenever a new theme arrives, so the keyboard knows to redraw.
     private(set) static var version = 0
@@ -60,14 +66,28 @@ enum CustomThemeStore {
         guard pasteboard.contains(pasteboardTypes: [themeType]),
               let json = pasteboard.data(forPasteboardType: themeType),
               let theme = try? JSONDecoder().decode(CustomThemeData.self, from: json) else { return false }
-        if let url = imageURL {
-            if theme.hasImage, let imageData = pasteboard.data(forPasteboardType: imageType) {
-                try? imageData.write(to: url, options: .atomic)
+        var note = "Colours received"
+        var stored = theme
+        if theme.hasImage {
+            // Read the photo from the item directly too, in case the first way comes back empty.
+            let imageData = pasteboard.data(forPasteboardType: imageType)
+                ?? pasteboard.items.first?[imageType] as? Data
+            if let imageData, UIImage(data: imageData) != nil, let url = imageURL,
+               (try? imageData.write(to: url, options: .atomic)) != nil {
+                note = "Photo received ✓ (\(imageData.count / 1024) KB)"
             } else {
-                try? FileManager.default.removeItem(at: url)
+                note = "⚠️ The photo didn't come through (\(imageData == nil ? "nothing on the clipboard" : "couldn't save it")). Tap Apply in the app again."
+                stored.hasImage = false
             }
+        } else if let url = imageURL {
+            try? FileManager.default.removeItem(at: url)
+            note = "Colours received (no photo)"
         }
-        UserDefaults.standard.set(json, forKey: defaultsKey)
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
+        UserDefaults.standard.set("\(note), \(formatter.string(from: Date()))", forKey: statusKey)
+        UserDefaults.standard.set((try? JSONEncoder().encode(stored)) ?? json, forKey: defaultsKey)
         pasteboard.items = []
         loaded = false
         cachedData = nil
